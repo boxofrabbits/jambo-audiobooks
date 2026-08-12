@@ -406,7 +406,7 @@ function renderLogin() {
         el('button', { class: 'profile-card', onclick: () => renderPinPad(u) },
           avatarEl(u), el('span', {}, u.name)))),
     state.haUser ? el('p', { class: 'tagline', style: { marginTop: '26px', fontSize: '13px' } },
-      `Signed in to Home Assistant as ${state.haUser.displayName || 'you'} — pick your profile and enter its PIN once, and you'll be logged in automatically from now on.`) : null,
+      `You're ${state.haUser.displayName || 'signed in'} on Home Assistant, but both profiles are taken — pick yours and enter its PIN once to claim it.`) : null,
   ));
 }
 
@@ -472,7 +472,7 @@ async function renderLibrary() {
             await api('/api/rescan', { method: 'POST' }).catch(() => {});
             renderLibrary();
           } }),
-        el('button', { class: 'icon-btn', title: 'Log out', html: ICONS.logout,
+        state.haUser ? null : el('button', { class: 'icon-btn', title: 'Log out', html: ICONS.logout,
           onclick: async () => {
             player.stop();
             await api('/api/logout', { method: 'POST' }).catch(() => {});

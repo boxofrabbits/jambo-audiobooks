@@ -73,9 +73,10 @@ automatically from your HA account:
 2. Install **Jambo Audiobooks** and start it.
 3. **Jambo** appears in the sidebar. Both phones must be logged into the HA
    companion app with their *own* HA user accounts.
-4. First visit: run the normal profile setup, and each person taps their
-   profile + PIN once. That links the profile to their HA account — from then
-   on the panel signs you in automatically, no login at all.
+4. That's it — no setup, no login. The first two HA accounts that open the
+   panel each get a profile automatically (named after their HA display name).
+   A demo book is generated so there's something to play immediately; it
+   removes itself once real books appear in the library.
 5. Put books in `/share/jambo/books/` (one folder per book, via Samba), then
    tap ↻ in the app.
 
@@ -92,7 +93,9 @@ Progress data lives in the add-on's `/data` (backed up by HA snapshots).
 panel may pause when the phone locks (a webview limitation, worst on iOS). If
 that bothers you, enable the optional port 3000 in the add-on's configuration
 and add `http://<ha-ip>:3000` to each phone's home screen as a PWA — same
-server, same progress, proper lock-screen controls. The port also makes Jambo
+server, same progress, proper lock-screen controls. On that screen you pick
+your profile and enter a PIN; profiles created via HA have none yet, so the
+first PIN you enter becomes your PIN. The port also makes Jambo
 reachable to anyone on your LAN with a PIN, so only enable it if that's okay
 with you (remotely it's still only reachable through your HA/Tailscale setup).
 

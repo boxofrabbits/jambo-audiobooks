@@ -8,6 +8,7 @@ import {
   sessionMiddleware, requireAuth, loginLimiter,
 } from './lib/auth.js';
 import { scanLibrary } from './lib/scan.js';
+import { syncSampleBook } from './lib/sample.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -33,6 +34,7 @@ let scanning = null;
 
 async function rescan() {
   if (!scanning) {
+    try { syncSampleBook(BOOKS_DIR); } catch (err) { console.warn('[sample]', err.message); }
     scanning = scanLibrary(BOOKS_DIR, path.join(DATA_DIR, 'scan-cache.json'))
       .then(result => {
         books = result;
@@ -50,16 +52,35 @@ app.disable('x-powered-by');
 app.use(express.json());
 
 // Home Assistant ingress: trust the HA-authenticated user identity, but only
-// when the request really comes from the supervisor's ingress proxy.
+// when the request really comes from the supervisor's ingress proxy. HA users
+// are signed in automatically — linked by id, matched to an existing profile
+// by name, or given a brand-new profile (first two HA users only).
+const PALETTE = ['#e0918b', '#8bb8e0', '#9fd0a5', '#e0c98b', '#c39be0', '#e08bc3'];
 app.use((req, res, next) => {
   const uid = req.headers['x-remote-user-id'];
   const from = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   if (uid && from === INGRESS_TRUSTED_IP) {
     req.haUser = {
       id: String(uid),
-      displayName: String(req.headers['x-remote-user-display-name'] || req.headers['x-remote-user-name'] || ''),
+      displayName: String(req.headers['x-remote-user-display-name'] || req.headers['x-remote-user-name'] || '').trim(),
     };
-    req.user = db.users.find(u => u.haUserId === req.haUser.id) || null;
+    let user = db.users.find(u => u.haUserId === req.haUser.id);
+    if (!user && req.haUser.displayName) {
+      user = db.users.find(u => !u.haUserId && u.name.toLowerCase() === req.haUser.displayName.toLowerCase());
+      if (user) { user.haUserId = req.haUser.id; db.save(); }
+    }
+    if (!user && db.users.length < 2) {
+      user = {
+        id: crypto.randomUUID(),
+        name: (req.haUser.displayName || 'Listener').slice(0, 30),
+        color: PALETTE.find(c => !db.users.some(u => u.color === c)) || PALETTE[0],
+        pinHash: null,
+        haUserId: req.haUser.id,
+      };
+      db.addUser(user);
+      console.log(`[auth] created profile "${user.name}" for HA user ${req.haUser.id}`);
+    }
+    req.user = user || null;
   }
   next();
 });
@@ -124,7 +145,22 @@ app.post('/api/setup', (req, res) => {
 
 app.post('/api/login', loginLimiter, (req, res) => {
   const user = db.getUser(String(req.body?.userId || ''));
-  if (!user || !checkPin(String(req.body?.pin || ''), user.pinHash)) {
+  const pin = String(req.body?.pin || '');
+  if (!user) {
+    res.recordFailedLogin?.();
+    return res.status(401).json({ error: 'wrong_pin' });
+  }
+  // Profiles auto-created via Home Assistant start without a PIN; the first
+  // PIN entered on the standalone login screen claims and sets it. A different
+  // HA account can never claim a profile that belongs to someone else's.
+  if (!user.pinHash) {
+    if (req.haUser && user.haUserId && user.haUserId !== req.haUser.id) {
+      return res.status(401).json({ error: 'wrong_pin' });
+    }
+    if (!/^\d{4,8}$/.test(pin)) return res.status(400).json({ error: 'pin_must_be_4_to_8_digits' });
+    user.pinHash = hashPin(pin);
+    db.save();
+  } else if (!checkPin(pin, user.pinHash)) {
     res.recordFailedLogin?.();
     return res.status(401).json({ error: 'wrong_pin' });
   }
