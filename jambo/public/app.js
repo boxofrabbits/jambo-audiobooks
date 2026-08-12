@@ -53,9 +53,17 @@ function fmtLong(sec) {
   return `${sec}s`;
 }
 
-// All URLs are relative so the app works both standalone ("/") and behind
-// Home Assistant ingress ("/api/hassio_ingress/<token>/").
-const rel = (path) => new URL(path, document.baseURI).href;
+// All URLs must resolve relative to where the app is mounted, so it works both
+// standalone ("/") and behind Home Assistant ingress
+// ("/api/hassio_ingress/<token>/"). Leading slashes are stripped: "/api/x"
+// would otherwise escape the ingress prefix and hit HA's own /api/.
+const BASE = (() => {
+  const p = location.pathname;
+  if (p.endsWith('/')) return p;
+  const last = p.split('/').pop();
+  return last.includes('.') ? p.slice(0, p.length - last.length) : p + '/';
+})();
+const rel = (path) => BASE + String(path).replace(/^\/+/, '');
 
 async function api(path, opts = {}) {
   const res = await fetch(rel(path), {
@@ -243,7 +251,7 @@ const player = {
   beaconSave() {
     if (!this.book || !state.me) return;
     const payload = JSON.stringify({ bookId: this.book.id, position: this.position });
-    navigator.sendBeacon('/api/progress', new Blob([payload], { type: 'application/json' }));
+    navigator.sendBeacon(rel('api/progress'), new Blob([payload], { type: 'application/json' }));
   },
 
   updateMediaSession() {
@@ -253,7 +261,9 @@ const player = {
       title: this.book.title,
       artist: this.book.author || 'Audiobook',
       album: 'Jambo',
-      artwork: this.book.hasCover ? [{ src: rel('covers/' + this.book.id), sizes: '512x512' }] : [],
+      artwork: this.book.hasCover
+        ? [{ src: new URL(rel('covers/' + this.book.id), location.origin).href, sizes: '512x512' }]
+        : [],
     });
     ms.setActionHandler('play', () => this.toggle());
     ms.setActionHandler('pause', () => this.toggle());
