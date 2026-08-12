@@ -1,0 +1,25 @@
+name: Jambo Audiobooks
+version: "1.0.0"
+slug: jambo
+description: Shared audiobook player for two — see each other's progress on the timeline
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+ingress: true
+ingress_port: 3000
+panel_icon: mdi:book-play
+panel_title: Jambo
+panel_admin: false
+map:
+  - share:rw
+  - media:rw
+options:
+  books_dir: /share/jambo/books
+schema:
+  books_dir: str
+ports:
+  3000/tcp: null
+ports_description:
+  3000/tcp: Optional direct access (for installing Jambo as a phone PWA with lock-screen playback). Leave disabled to keep it ingress-only.

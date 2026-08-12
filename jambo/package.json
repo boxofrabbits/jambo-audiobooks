@@ -1,0 +1,20 @@
+{
+  "name": "jambo-audiobooks",
+  "version": "1.0.0",
+  "description": "A tiny shared audiobook player for two — see each other's progress on the timeline.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "gen-icons": "node scripts/gen-icons.mjs",
+    "gen-sample": "node scripts/gen-sample.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "music-metadata": "^10.5.0"
+  },
+  "devDependencies": {
+    "pngjs": "^7.0.0"
+  }
+}
