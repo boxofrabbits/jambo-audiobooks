@@ -7,7 +7,7 @@ import {
   loadSecret, hashPin, checkPin, setSessionCookie, clearSessionCookie,
   sessionMiddleware, requireAuth, loginLimiter,
 } from './lib/auth.js';
-import { scanLibrary } from './lib/scan.js';
+import { scanLibrary, AUDIO_EXT, IMAGE_EXT } from './lib/scan.js';
 import { syncSampleBook } from './lib/sample.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -228,6 +228,67 @@ const saveProgress = (req, res) => {
 };
 app.put('/api/progress', requireAuth, saveProgress);
 app.post('/api/progress', requireAuth, saveProgress);
+
+// ---------- uploads ----------
+
+// One request per file, raw body streamed straight to disk (no buffering).
+// POST /api/upload?book=<folder name>&filename=<file name>
+const MAX_UPLOAD_BYTES = 3 * 1024 ** 3; // 3 GB per file
+const SAFE_NAME = /^[^/\\<>:"|?*\x00-\x1f]{1,150}$/;
+
+function safeEntryName(raw) {
+  const name = String(raw || '').trim();
+  if (!SAFE_NAME.test(name) || name.startsWith('.') || name.endsWith('.') || name.includes('..')) return null;
+  return name;
+}
+
+app.post('/api/upload', requireAuth, (req, res) => {
+  const book = safeEntryName(req.query.book);
+  const filename = safeEntryName(req.query.filename);
+  if (!book || !filename) return res.status(400).json({ error: 'bad_name' });
+  const ext = path.extname(filename).toLowerCase();
+  if (!AUDIO_EXT.has(ext) && !IMAGE_EXT.has(ext)) return res.status(400).json({ error: 'unsupported_type' });
+
+  const dir = path.join(BOOKS_DIR, book);
+  fs.mkdirSync(dir, { recursive: true });
+  const finalPath = path.join(dir, filename);
+  const tmpPath = finalPath + '.uploading';
+
+  let bytes = 0;
+  let failed = false;
+  const ws = fs.createWriteStream(tmpPath);
+
+  const fail = (status, error) => {
+    if (failed) return;
+    failed = true;
+    ws.destroy();
+    fs.rm(tmpPath, { force: true }, () => {});
+    req.destroy();
+    if (!res.headersSent) res.status(status).json({ error });
+  };
+
+  req.on('data', (c) => {
+    bytes += c.length;
+    if (bytes > MAX_UPLOAD_BYTES) fail(413, 'file_too_large');
+  });
+  req.on('error', () => fail(500, 'upload_interrupted'));
+  ws.on('error', (err) => {
+    console.error('[upload] write failed:', err.message);
+    fail(500, 'disk_write_failed');
+  });
+  ws.on('finish', () => {
+    if (failed) return;
+    try {
+      fs.renameSync(tmpPath, finalPath);
+      console.log(`[upload] ${req.user.name} added ${book}/${filename} (${(bytes / 1e6).toFixed(1)} MB)`);
+      res.json({ ok: true, bytes });
+    } catch (err) {
+      console.error('[upload] finalize failed:', err.message);
+      fail(500, 'disk_write_failed');
+    }
+  });
+  req.pipe(ws);
+});
 
 // ---------- media ----------
 

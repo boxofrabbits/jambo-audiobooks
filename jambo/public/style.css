@@ -377,6 +377,28 @@ input:focus { border-color: var(--accent); }
 
 .has-mini { padding-bottom: 92px; }
 
+/* ---------- upload ---------- */
+
+.upload-list { display: flex; flex-direction: column; gap: 6px; }
+.upload-file {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 13px; color: var(--text-dim);
+  background: var(--bg-raise-2);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.upload-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+input[type="file"] { padding: 10px; font-size: 13.5px; }
+input[type="file"]::file-selector-button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-right: 12px;
+}
+
 .spinner {
   width: 26px; height: 26px;
   border: 3px solid var(--bg-raise-2);

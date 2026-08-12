@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseFile } from 'music-metadata';
 
-const AUDIO_EXT = new Set(['.mp3', '.wav', '.m4a', '.m4b', '.aac', '.ogg', '.opus', '.flac']);
-const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+export const AUDIO_EXT = new Set(['.mp3', '.wav', '.m4a', '.m4b', '.aac', '.ogg', '.opus', '.flac']);
+export const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
 
 const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
 

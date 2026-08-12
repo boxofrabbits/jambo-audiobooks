@@ -32,6 +32,7 @@ const ICONS = {
   backArrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-1.5 6.5"/><path d="M20 5v6h-6" stroke-linejoin="round"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>',
 };
 
 // ---------- utils ----------
@@ -391,6 +392,7 @@ function render() {
   if (!state.me) return renderLogin();
   const m = location.hash.match(/^#\/book\/(.+)$/);
   if (m) return renderPlayer(decodeURIComponent(m[1]));
+  if (location.hash === '#/upload') return renderUpload();
   renderLibrary();
 }
 
@@ -526,6 +528,8 @@ async function renderLibrary() {
     el('div', { class: 'lib-header' },
       el('div', { class: 'logo' }, 'Jambo', el('span', { class: 'dot' }, '.')),
       el('div', { class: 'header-actions' },
+        el('button', { class: 'icon-btn', title: 'Add a book', html: ICONS.upload,
+          onclick: () => navigate('#/upload') }),
         el('button', { class: 'icon-btn', title: 'Rescan library', html: ICONS.refresh,
           onclick: async (e) => {
             e.currentTarget.style.opacity = '0.4';
@@ -629,6 +633,95 @@ function miniPlayerEl() {
   };
   bar.update();
   return bar;
+}
+
+// ---------- upload screen ----------
+
+function renderUpload() {
+  let files = [];
+  let uploading = false;
+
+  const author = el('input', { placeholder: 'e.g. Ursula K. Le Guin (optional)' });
+  const title = el('input', { placeholder: 'e.g. A Wizard of Earthsea' });
+  const fileInput = el('input', { type: 'file', multiple: '', accept: 'audio/*,image/*,.m4b,.opus' });
+  const fileList = el('div', { class: 'upload-list' });
+  const status = el('p', { class: 'error-msg', style: { textAlign: 'center' } });
+  const progressFill = el('div', { style: { width: '0%', background: 'var(--accent)' } });
+  const progressBar = el('div', { class: 'mini-bar', style: { display: 'none', height: '8px', marginTop: '10px' } }, progressFill);
+  const submitBtn = el('button', { class: 'btn-primary', style: { marginTop: '14px' } }, 'Upload book');
+
+  fileInput.addEventListener('change', () => {
+    files = [...fileInput.files];
+    fileList.replaceChildren(...files.map(f =>
+      el('div', { class: 'upload-file' },
+        el('span', { class: 'upload-file-name' }, f.name),
+        el('span', { class: 'dur' }, `${(f.size / 1e6).toFixed(1)} MB`))));
+  });
+
+  // XHR instead of fetch for real upload progress events.
+  const uploadOne = (file, folder, onProgress) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', rel(`api/upload?book=${encodeURIComponent(folder)}&filename=${encodeURIComponent(file.name)}`));
+    xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); });
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(JSON.parse(xhr.responseText || '{}').error || `HTTP ${xhr.status}`));
+    });
+    xhr.addEventListener('error', () => reject(new Error('network error')));
+    xhr.send(file);
+  });
+
+  submitBtn.addEventListener('click', async () => {
+    if (uploading) return;
+    status.textContent = '';
+    const t = title.value.trim();
+    if (!t) { status.textContent = 'Give the book a title.'; return; }
+    if (files.length === 0) { status.textContent = 'Pick the audio files (and a cover if you have one).'; return; }
+    const folder = (author.value.trim() ? `${author.value.trim()} - ${t}` : t).replace(/[/\\<>:"|?*]/g, '');
+
+    uploading = true;
+    submitBtn.disabled = true;
+    progressBar.style.display = '';
+    const totalBytes = files.reduce((s, f) => s + f.size, 0);
+    let doneBytes = 0;
+    try {
+      for (const file of files) {
+        status.textContent = '';
+        submitBtn.textContent = `Uploading ${file.name}…`;
+        await uploadOne(file, folder, (frac) => {
+          progressFill.style.width = `${((doneBytes + frac * file.size) / totalBytes) * 100}%`;
+        });
+        doneBytes += file.size;
+      }
+      submitBtn.textContent = 'Scanning…';
+      await api('/api/rescan', { method: 'POST' });
+      navigate('#/library');
+    } catch (e) {
+      status.textContent = `Upload failed: ${e.message}`;
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Retry upload';
+      uploading = false;
+    }
+  });
+
+  $app.replaceChildren(el('div', { class: 'screen fade-in' },
+    el('div', { class: 'player-top' },
+      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate('#/library') }),
+      state.me ? avatarEl(state.me, true) : null),
+    el('div', { class: 'setup-card', style: { marginTop: '8px' } },
+      el('h3', {}, 'Add a book'),
+      el('div', { class: 'field' }, el('label', {}, 'Author'), author),
+      el('div', { class: 'field' }, el('label', {}, 'Title'), title),
+      el('div', { class: 'field' },
+        el('label', {}, 'Files — the audio parts, plus a cover image if you have one'),
+        fileInput),
+      fileList,
+      progressBar,
+      submitBtn,
+      status),
+    el('p', { class: 'tagline', style: { fontSize: '12.5px', textAlign: 'center' } },
+      'Parts play in filename order — name them 01, 02, 03… Big books over slow connections can take a while; keep the app open until it finishes.'),
+  ));
 }
 
 // ---------- player screen ----------

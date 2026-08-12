@@ -21,7 +21,12 @@ that folder up if you care about your positions.
 
 ## Adding books
 
-One folder per book inside `jambo/books/` (or wherever `BOOKS_DIR` points):
+Easiest: tap the ⬆ button in the app header — give the book an author/title,
+pick the audio files (plus a cover image) straight from your phone or
+computer, and it uploads to the server and appears in the library.
+
+Or drop folders in directly — one folder per book inside `jambo/books/` (or
+wherever `BOOKS_DIR` points):
 
 ```
 books/
