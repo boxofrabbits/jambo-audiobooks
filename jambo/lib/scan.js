@@ -16,6 +16,36 @@ function loadCache(cacheFile) {
   try { return JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { return {}; }
 }
 
+// Fallback when music-metadata can't produce a duration: read the RIFF header
+// directly (duration = data bytes / byte rate).
+function wavDuration(filePath) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(12);
+    fs.readSync(fd, head, 0, 12, 0);
+    if (head.toString('ascii', 0, 4) !== 'RIFF' || head.toString('ascii', 8, 12) !== 'WAVE') return 0;
+    let pos = 12, byteRate = 0, dataSize = 0;
+    const chunkHead = Buffer.alloc(8);
+    while (pos + 8 <= size) {
+      fs.readSync(fd, chunkHead, 0, 8, pos);
+      const id = chunkHead.toString('ascii', 0, 4);
+      const csize = chunkHead.readUInt32LE(4);
+      if (id === 'fmt ') {
+        const fmt = Buffer.alloc(16);
+        fs.readSync(fd, fmt, 0, 16, pos + 8);
+        byteRate = fmt.readUInt32LE(8);
+      } else if (id === 'data') {
+        dataSize = csize;
+      }
+      pos += 8 + csize + (csize % 2);
+    }
+    return byteRate > 0 ? dataSize / byteRate : 0;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export async function scanLibrary(booksDir, cacheFile) {
   fs.mkdirSync(booksDir, { recursive: true });
   const cache = loadCache(cacheFile);
@@ -50,7 +80,7 @@ export async function scanLibrary(booksDir, cacheFile) {
       const stat = fs.statSync(filePath);
       const key = `${filePath}|${stat.size}|${stat.mtimeMs}`;
       let meta = cache[key];
-      if (!meta) {
+      if (!meta || !(meta.duration > 0)) {
         meta = { duration: 0, title: '', artist: '', album: '' };
         try {
           const parsed = await parseFile(filePath, { duration: true });
@@ -61,8 +91,18 @@ export async function scanLibrary(booksDir, cacheFile) {
         } catch (err) {
           console.warn(`[scan] could not read metadata for ${filePath}: ${err.message}`);
         }
+        if (!(meta.duration > 0) && path.extname(file).toLowerCase() === '.wav') {
+          try {
+            meta.duration = wavDuration(filePath);
+            if (meta.duration > 0) console.log(`[scan] used RIFF-header duration for ${file}`);
+          } catch (err) {
+            console.warn(`[scan] RIFF fallback failed for ${filePath}: ${err.message}`);
+          }
+        }
+        if (!(meta.duration > 0)) console.warn(`[scan] no duration for ${filePath} — timeline will be degraded`);
       }
-      newCache[key] = meta;
+      // Failed reads are not cached, so a transient failure heals on rescan.
+      if (meta.duration > 0) newCache[key] = meta;
       metas.push(meta);
       tracks.push({
         idx: tracks.length,

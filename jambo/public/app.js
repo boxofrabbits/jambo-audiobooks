@@ -199,7 +199,7 @@ const player = {
 
   seek(globalSec, thenPlay = this.playing) {
     if (!this.book) return;
-    globalSec = clamp(globalSec, 0, Math.max(0, this.book.duration - 0.5));
+    globalSec = clamp(globalSec, 0, this.book.duration > 0 ? this.book.duration - 0.5 : Infinity);
     const idx = this.trackForPos(globalSec);
     const offset = globalSec - this.book.tracks[idx].start;
     this.position = globalSec;
@@ -318,6 +318,7 @@ const player = {
 
   updatePositionState() {
     if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState || !this.book) return;
+    if (!(this.book.duration > 0)) return; // a bogus position state can break the OS notification
     try {
       navigator.mediaSession.setPositionState({
         duration: this.book.duration,
@@ -768,12 +769,14 @@ function updatePlayerUI() {
   if (ui) {
     const { book } = ui;
     const scrub = ui.getScrub();
-    const pos = scrub != null ? scrub : clamp(player.position, 0, book.duration);
+    // With an unknown total duration the elapsed clock still ticks; only the
+    // percentage-based visuals degrade.
+    const pos = scrub != null ? scrub : (book.duration > 0 ? clamp(player.position, 0, book.duration) : player.position);
     const pct = book.duration > 0 ? (pos / book.duration) * 100 : 0;
     ui.fill.style.width = `${pct}%`;
     ui.thumb.style.left = `${pct}%`;
     ui.elapsed.textContent = fmtClock(pos);
-    ui.remaining.textContent = `-${fmtClock(book.duration - pos)}`;
+    ui.remaining.textContent = book.duration > 0 ? `-${fmtClock(book.duration - pos)}` : '';
     ui.playBtn.innerHTML = player.playing ? ICONS.pause : ICONS.play;
     ui.speedChip.textContent = `${player.speed}×`;
     ui.speedChip.classList.toggle('active', player.speed !== 1);
