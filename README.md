@@ -116,6 +116,25 @@ with you (remotely it's still only reachable through your HA/Tailscale setup).
    ```
 3. Upload books into `books/` (e.g. with `scp` or `rsync`) and tap rescan.
 
+## Overtake notifications (HA add-on only)
+
+Jambo can send a native push through the HA companion app when one of you
+passes the other's bookmark ("Kiki just passed you in “…” — you're now 12m
+behind 👀"). In the add-on's Configuration tab, fill in
+`overtake_notifications` with each profile's notify service:
+
+```yaml
+overtake_notifications:
+  - profile: Kiki
+    service: mobile_app_kikis_pixel
+  - profile: Niki
+    service: mobile_app_nikis_iphone
+```
+
+(Find the service names under Developer Tools → Actions, they start with
+`notify.mobile_app_`.) Only natural listening triggers it — skipping past
+someone doesn't count — and it fires at most once per half hour per book.
+
 ## Voice notes
 
 In the player, **hold the 🎙 button** and speak — releasing saves a voice note

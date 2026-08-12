@@ -263,11 +263,11 @@ const player = {
     if (audio.readyState >= 1 && !audio.seeking) {
       this.position = track.start + audio.currentTime;
     }
-    // Partner notes fire when natural playback sweeps past them (not seeks).
+    // Notes fire when natural playback sweeps past them (not seeks).
     const advanced = this.position - prev;
-    if (notePlayer.enabled && this.playing && advanced > 0 && advanced < 3) {
+    if (this.playing && advanced > 0 && advanced < 3) {
       for (const n of this.notes) {
-        if (n.userId !== state.me?.id && n.position > prev && n.position <= this.position) {
+        if (notePlayer.shouldAutoplay(n) && n.position > prev && n.position <= this.position) {
           notePlayer.trigger(n);
         }
       }
@@ -449,10 +449,18 @@ const notePlayer = {
   playing: null,
   resumeAfter: false,
 
-  enabled: localStorage.getItem('jambo_notes_autoplay') !== '0',
-  setEnabled(on) {
-    this.enabled = on;
-    localStorage.setItem('jambo_notes_autoplay', on ? '1' : '0');
+  // 'partner' = only their notes auto-play (default), 'all' = yours too, 'off' = none.
+  mode: localStorage.getItem('jambo_notes_mode')
+    || (localStorage.getItem('jambo_notes_autoplay') === '0' ? 'off' : 'partner'),
+  cycleMode() {
+    const order = ['partner', 'all', 'off'];
+    this.mode = order[(order.indexOf(this.mode) + 1) % order.length];
+    localStorage.setItem('jambo_notes_mode', this.mode);
+  },
+  shouldAutoplay(note) {
+    if (this.mode === 'off') return false;
+    if (this.mode === 'partner' && note.userId === state.me?.id) return false;
+    return true;
   },
 
   trigger(note) {
@@ -779,15 +787,31 @@ function renderUpload() {
   const fileList = el('div', { class: 'upload-list' });
   const status = el('p', { class: 'error-msg', style: { textAlign: 'center' } });
   const progressFill = el('div', { style: { width: '0%', background: 'var(--accent)' } });
-  const progressBar = el('div', { class: 'mini-bar', style: { display: 'none', height: '8px', marginTop: '10px' } }, progressFill);
+  const progressText = el('div', { style: { textAlign: 'center', fontSize: '12.5px', color: 'var(--text-dim)', marginTop: '6px' } });
+  const progressBar = el('div', { style: { display: 'none', marginTop: '10px' } },
+    el('div', { class: 'mini-bar', style: { height: '8px' } }, progressFill),
+    progressText);
   const submitBtn = el('button', { class: 'btn-primary', style: { marginTop: '14px' } }, 'Upload book');
 
-  fileInput.addEventListener('change', () => {
-    files = [...fileInput.files];
-    fileList.replaceChildren(...files.map(f =>
+  // Each pick ADDS to the list (some in-app file pickers only allow choosing
+  // one file at a time, so books can be assembled over several picks).
+  const renderFileList = () => {
+    fileList.replaceChildren(...files.map((f, i) =>
       el('div', { class: 'upload-file' },
         el('span', { class: 'upload-file-name' }, f.name),
-        el('span', { class: 'dur' }, `${(f.size / 1e6).toFixed(1)} MB`))));
+        el('span', { class: 'dur' }, `${(f.size / 1e6).toFixed(1)} MB`),
+        el('button', { class: 'upload-remove', title: 'Remove', onclick: () => {
+          if (uploading) return;
+          files.splice(i, 1);
+          renderFileList();
+        } }, '✕'))));
+  };
+  fileInput.addEventListener('change', () => {
+    for (const f of fileInput.files) {
+      if (!files.some(x => x.name === f.name && x.size === f.size)) files.push(f);
+    }
+    fileInput.value = ''; // so picking again (even the same file) re-fires change
+    renderFileList();
   });
 
   // XHR instead of fetch for real upload progress events.
@@ -817,14 +841,17 @@ function renderUpload() {
     const totalBytes = files.reduce((s, f) => s + f.size, 0);
     let doneBytes = 0;
     try {
-      for (const file of files) {
+      for (const [i, file] of files.entries()) {
         status.textContent = '';
         submitBtn.textContent = `Uploading ${file.name}…`;
         await uploadOne(file, folder, (frac) => {
-          progressFill.style.width = `${((doneBytes + frac * file.size) / totalBytes) * 100}%`;
+          const pct = ((doneBytes + frac * file.size) / totalBytes) * 100;
+          progressFill.style.width = `${pct}%`;
+          progressText.textContent = `${Math.round(pct)}% — file ${i + 1} of ${files.length}`;
         });
         doneBytes += file.size;
       }
+      progressText.textContent = '100% — done';
       submitBtn.textContent = 'Scanning…';
       await api('/api/rescan', { method: 'POST' });
       navigate('#/library');
@@ -845,7 +872,7 @@ function renderUpload() {
       el('div', { class: 'field' }, el('label', {}, 'Author'), author),
       el('div', { class: 'field' }, el('label', {}, 'Title'), title),
       el('div', { class: 'field' },
-        el('label', {}, 'Files — the audio parts, plus a cover image if you have one'),
+        el('label', {}, 'Files — the audio parts, plus a cover image if you have one. Tap again to add more.'),
         fileInput),
       fileList,
       progressBar,
@@ -946,8 +973,8 @@ async function renderPlayer(bookId) {
   const messageLine = el('p', { class: 'error-msg', style: { textAlign: 'center', fontSize: '13px' } });
 
   // --- voice notes: hold to record, toggle for auto-play ---
-  const notesChip = el('button', { class: 'chip-btn', onclick: () => {
-    notePlayer.setEnabled(!notePlayer.enabled);
+  const notesChip = el('button', { class: 'chip-btn', title: 'Which notes auto-play', onclick: () => {
+    notePlayer.cycleMode();
     updatePlayerUI();
   } });
 
@@ -1098,8 +1125,8 @@ function updatePlayerUI() {
     const sleepMins = SLEEP_CHOICES[player.sleepChoice];
     ui.sleepChip.textContent = sleepMins ? `😴 ${sleepMins}m` : '😴 Off';
     ui.sleepChip.classList.toggle('active', !!sleepMins);
-    ui.notesChip.textContent = notePlayer.enabled ? '💬 On' : '💬 Off';
-    ui.notesChip.classList.toggle('active', notePlayer.enabled);
+    ui.notesChip.textContent = { partner: '💬 Partner', all: '💬 All', off: '💬 Off' }[notePlayer.mode];
+    ui.notesChip.classList.toggle('active', notePlayer.mode !== 'off');
 
     if (book.tracks.length > 1) {
       ui.trackLabel.textContent = `Part ${player.trackIdx + 1} of ${book.tracks.length}`;

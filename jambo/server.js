@@ -16,10 +16,19 @@ let BOOKS_DIR = process.env.BOOKS_DIR || path.join(__dirname, 'books');
 
 // Running as a Home Assistant add-on: options from the add-on's Configuration
 // tab land in /data/options.json and override the env default.
+let NOTIFY_SERVICES = new Map(); // lowercased profile name -> notify service
 try {
   const opts = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'options.json'), 'utf8'));
   if (opts.books_dir) BOOKS_DIR = opts.books_dir;
+  for (const entry of opts.overtake_notifications || []) {
+    const service = String(entry.service || '').replace(/^notify\./, '');
+    if (entry.profile && /^[a-z0-9_]+$/.test(service)) {
+      NOTIFY_SERVICES.set(String(entry.profile).trim().toLowerCase(), service);
+    }
+  }
 } catch { /* not an add-on */ }
+
+const SUPERVISOR_URL = process.env.SUPERVISOR_URL || 'http://supervisor';
 const PORT = Number(process.env.PORT || 3000);
 
 // Home Assistant ingress proxies from a fixed IP and adds X-Remote-User-* headers.
@@ -275,6 +284,38 @@ app.get('/api/books/:id/progress', requireAuth, (req, res) => {
   });
 });
 
+// Native push via the HA companion app when one listener overtakes the other.
+const fmtGap = (sec) => {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m` : `${Math.round(sec)}s`;
+};
+const overtakeCooldown = new Map(); // `${passerId}:${bookId}` -> timestamp
+
+async function notifyOvertake(passer, passed, book, newPos, partnerPos) {
+  const service = NOTIFY_SERVICES.get(passed.name.toLowerCase());
+  if (!service || !process.env.SUPERVISOR_TOKEN) return;
+  const key = `${passer.id}:${book.id}`;
+  if (Date.now() - (overtakeCooldown.get(key) || 0) < 30 * 60e3) return;
+  overtakeCooldown.set(key, Date.now());
+  try {
+    const res = await fetch(`${SUPERVISOR_URL}/core/api/services/notify/${service}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: 'Jambo 📖',
+        message: `${passer.name} just passed you in “${book.title}” — you're now ${fmtGap(newPos - partnerPos)} behind 👀`,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    console.log(`[notify] told ${passed.name} that ${passer.name} passed them in "${book.title}"`);
+  } catch (err) {
+    console.warn(`[notify] failed to notify ${passed.name}: ${err.message}`);
+  }
+}
+
 // POST is accepted too because sendBeacon (used for unload-time saves) can only POST.
 const saveProgress = (req, res) => {
   const book = bookById.get(String(req.body?.bookId || ''));
@@ -283,8 +324,22 @@ const saveProgress = (req, res) => {
   if (!Number.isFinite(pos) || pos < 0) return res.status(400).json({ error: 'bad_position' });
   pos = Math.min(pos, book.duration || pos);
   const finished = req.body?.finished === true || (book.duration > 0 && pos >= book.duration - 5);
+
+  const prevPos = db.getProgress(req.user.id, book.id)?.position ?? 0;
   db.setProgress(req.user.id, book.id, pos, finished);
   res.json({ ok: true });
+
+  // Overtake detection: only for natural listening (small forward step, not a
+  // seek), crossing a partner who hasn't finished the book.
+  const partner = db.users.find(u => u.id !== req.user.id);
+  const partnerProg = partner && db.getProgress(partner.id, book.id);
+  const step = pos - prevPos;
+  if (
+    partnerProg && !partnerProg.finished && step > 0 && step < 60 &&
+    prevPos <= partnerProg.position && pos > partnerProg.position
+  ) {
+    notifyOvertake(req.user, partner, book, pos, partnerProg.position);
+  }
 };
 app.put('/api/progress', requireAuth, saveProgress);
 app.post('/api/progress', requireAuth, saveProgress);
