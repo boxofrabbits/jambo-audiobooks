@@ -124,6 +124,8 @@ const player = {
   sleepDeadline: null,
   saveTimer: null,
   lastSavedPos: null,
+  blobUrl: null,       // fallback object URL when direct streaming fails
+  blobTriedFor: null,
 
   get playing() { return this.book && !audio.paused && !audio.ended; },
 
@@ -149,6 +151,8 @@ const player = {
   setTrack(idx, offset, thenPlay) {
     const track = this.book.tracks[idx];
     this.trackIdx = idx;
+    if (this.blobUrl) { URL.revokeObjectURL(this.blobUrl); this.blobUrl = null; }
+    setPlayerMessage('');
     audio.src = rel(`media/${this.book.id}/${idx}`);
     audio.playbackRate = this.speed;
     const onMeta = () => {
@@ -157,6 +161,40 @@ const player = {
     };
     audio.addEventListener('loadedmetadata', onMeta, { once: true });
     audio.load();
+  },
+
+  // Some webviews (notably the HA companion apps) fetch <audio> media without
+  // the session cookies the page has, so the stream 401s at the ingress
+  // layer. fetch() does carry the session — download the part and play it
+  // from memory instead.
+  async onMediaError(err) {
+    if (!this.book) return;
+    const key = `${this.book.id}/${this.trackIdx}`;
+    if (this.blobTriedFor === key) {
+      setPlayerMessage(`Could not play this file (${err || 'media error'}).`);
+      return;
+    }
+    this.blobTriedFor = key;
+    const wasPlayingIntent = true; // user just tried to play; resume after fallback
+    const offset = this.position - this.book.tracks[this.trackIdx].start;
+    setPlayerMessage('Direct stream blocked — loading this part instead…');
+    try {
+      const res = await fetch(rel(`media/${this.book.id}/${this.trackIdx}`));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const blob = await res.blob();
+      if (this.blobUrl) URL.revokeObjectURL(this.blobUrl);
+      this.blobUrl = URL.createObjectURL(blob);
+      audio.src = this.blobUrl;
+      const onMeta = () => {
+        audio.currentTime = Math.max(0, offset);
+        if (wasPlayingIntent) audio.play().catch(() => {});
+      };
+      audio.addEventListener('loadedmetadata', onMeta, { once: true });
+      audio.load();
+      setPlayerMessage('');
+    } catch (e) {
+      setPlayerMessage(`Playback failed: ${e.message}`);
+    }
   },
 
   seek(globalSec, thenPlay = this.playing) {
@@ -199,6 +237,8 @@ const player = {
     if (save && this.book) this.saveProgress(true);
     audio.pause();
     audio.removeAttribute('src');
+    if (this.blobUrl) { URL.revokeObjectURL(this.blobUrl); this.blobUrl = null; }
+    this.blobTriedFor = null;
     this.book = null;
     this.sleepDeadline = null;
     this.sleepChoice = 0;
@@ -286,8 +326,17 @@ const player = {
   },
 };
 
+function setPlayerMessage(msg) {
+  if (playerUI?.messageLine) playerUI.messageLine.textContent = msg;
+  if (msg) console.warn('[player]', msg);
+}
+
 audio.addEventListener('timeupdate', () => { player.onTick(); updatePlayerUI(); });
 audio.addEventListener('ended', () => player.onEnded());
+audio.addEventListener('error', () => {
+  const codes = { 1: 'aborted', 2: 'network error', 3: 'decode error', 4: 'source not supported' };
+  player.onMediaError(codes[audio.error?.code] || 'media error');
+});
 audio.addEventListener('play', () => updatePlayerUI());
 audio.addEventListener('pause', () => { player.saveProgress(true); updatePlayerUI(); });
 
@@ -586,7 +635,8 @@ async function renderPlayer(bookId) {
   }
 
   if (player.book?.id !== book.id) {
-    player.load(book, book.me?.position || 0);
+    // A finished book reopens from the start; otherwise resume where you left off.
+    player.load(book, book.me?.finished ? 0 : book.me?.position || 0);
   } else {
     player.book.me = book.me;
     player.book.partner = book.partner;
@@ -641,6 +691,7 @@ async function renderPlayer(bookId) {
     updatePlayerUI();
   } });
   const sleepChip = el('button', { class: 'chip-btn', onclick: () => { player.cycleSleep(); updatePlayerUI(); } });
+  const messageLine = el('p', { class: 'error-msg', style: { textAlign: 'center', fontSize: '13px' } });
 
   const trackLabel = el('div', { class: 'track-label' });
   const deltaNum = el('div', { class: 'delta-num' });
@@ -675,12 +726,13 @@ async function renderPlayer(bookId) {
       el('button', { class: 'skip-btn small', html: ICONS.fwd30 + '<span class="skip-num">10</span>', onclick: () => player.skip(10) }),
       el('button', { class: 'skip-btn', html: ICONS.fwd30 + '<span class="skip-num">30</span>', onclick: () => player.skip(30) })),
     el('div', { class: 'sub-controls' }, speedChip, sleepChip),
+    messageLine,
     chapters,
   ));
 
   playerUI = {
     book, fill, thumb, partnerMarker, elapsed, remaining, playBtn, speedChip, sleepChip,
-    trackLabel, deltaNum, partnerStatus, chapterRows, partnerInfo,
+    trackLabel, deltaNum, partnerStatus, chapterRows, partnerInfo, messageLine,
     getScrub: () => scrubPos,
     partnerProgress: partnerInfo?.progress || null,
   };

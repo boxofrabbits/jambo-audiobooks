@@ -254,6 +254,7 @@ input:focus { border-color: var(--accent); }
   height: 26px;
   display: flex; align-items: center;
   cursor: pointer;
+  touch-action: none;
 }
 .timeline-track {
   position: absolute; left: 0; right: 0;
