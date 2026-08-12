@@ -202,8 +202,67 @@ app.get('/api/books/:id', requireAuth, (req, res) => {
   res.json({
     ...bookSummary(book, req.user.id),
     tracks: book.tracks.map(t => ({ idx: t.idx, title: t.title, duration: t.duration, start: t.start })),
+    notes: notesForClient(book.id),
   });
 });
+
+// ---------- voice notes ----------
+
+const NOTES_DIR = path.join(DATA_DIR, 'notes');
+const MAX_NOTE_BYTES = 20 * 1024 * 1024; // ~2 min of 48kHz 16-bit WAV, with headroom
+
+// POST /api/notes?bookId=&position= — raw WAV body.
+app.post('/api/notes', requireAuth, (req, res) => {
+  const book = bookById.get(String(req.query.bookId || ''));
+  const position = Number(req.query.position);
+  if (!book || !Number.isFinite(position) || position < 0) return res.status(400).json({ error: 'bad_note' });
+
+  fs.mkdirSync(NOTES_DIR, { recursive: true });
+  const id = crypto.randomUUID();
+  const filePath = path.join(NOTES_DIR, `${id}.wav`);
+  let bytes = 0;
+  let failed = false;
+  const ws = fs.createWriteStream(filePath);
+  const fail = (status, error) => {
+    if (failed) return;
+    failed = true;
+    ws.destroy();
+    fs.rm(filePath, { force: true }, () => {});
+    req.destroy();
+    if (!res.headersSent) res.status(status).json({ error });
+  };
+  req.on('data', (c) => { bytes += c.length; if (bytes > MAX_NOTE_BYTES) fail(413, 'note_too_long'); });
+  req.on('error', () => fail(500, 'upload_interrupted'));
+  ws.on('error', () => fail(500, 'disk_write_failed'));
+  ws.on('finish', () => {
+    if (failed) return;
+    const note = { id, bookId: book.id, userId: req.user.id, position, createdAt: Date.now() };
+    db.addNote(note);
+    console.log(`[notes] ${req.user.name} left a note on "${book.title}" at ${Math.round(position)}s`);
+    res.json({ ok: true, note: { ...note, user: publicUser(req.user) } });
+  });
+  req.pipe(ws);
+});
+
+app.get('/api/notes/:id/audio', requireAuth, (req, res) => {
+  const note = db.getNote(req.params.id);
+  if (!note) return res.status(404).end();
+  res.sendFile(path.join(NOTES_DIR, `${note.id}.wav`), { acceptRanges: true, cacheControl: false });
+});
+
+app.delete('/api/notes/:id', requireAuth, (req, res) => {
+  const note = db.getNote(req.params.id);
+  if (!note) return res.status(404).json({ error: 'not_found' });
+  if (note.userId !== req.user.id) return res.status(403).json({ error: 'not_yours' });
+  db.deleteNote(note.id);
+  fs.rm(path.join(NOTES_DIR, `${note.id}.wav`), { force: true }, () => {});
+  res.json({ ok: true });
+});
+
+const notesForClient = (bookId) =>
+  db.notesForBook(bookId)
+    .map(n => ({ id: n.id, position: n.position, user: publicUser(db.getUser(n.userId)), userId: n.userId, createdAt: n.createdAt }))
+    .sort((a, b) => a.position - b.position);
 
 app.get('/api/books/:id/progress', requireAuth, (req, res) => {
   const book = bookById.get(req.params.id);
@@ -212,6 +271,7 @@ app.get('/api/books/:id/progress', requireAuth, (req, res) => {
   res.json({
     me: progressFor(req.user.id, book),
     partner: partner ? { user: publicUser(partner), progress: progressFor(partner.id, book) } : null,
+    notes: notesForClient(book.id),
   });
 });
 

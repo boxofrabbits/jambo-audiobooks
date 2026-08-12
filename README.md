@@ -116,6 +116,15 @@ with you (remotely it's still only reachable through your HA/Tailscale setup).
    ```
 3. Upload books into `books/` (e.g. with `scp` or `rsync`) and tap rescan.
 
+## Voice notes
+
+In the player, **hold the 🎙 button** and speak — releasing saves a voice note
+pinned to your current spot (an Undo link appears for a few seconds). Notes
+show as coloured dots on the timeline. When your partner's playhead reaches
+your note, their book pauses, the note plays, and the book resumes. The 💬
+chip turns auto-play of incoming notes on/off; tapping any dot plays that note
+on demand. Notes are recorded as WAV so they play on both iPhone and Android.
+
 ## Notes
 
 - Progress saves every few seconds while playing and on every pause/seek, so

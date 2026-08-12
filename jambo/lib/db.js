@@ -16,6 +16,7 @@ export class Db {
     }
     if (!this.data.users) this.data.users = [];
     if (!this.data.progress) this.data.progress = {};
+    if (!this.data.notes) this.data.notes = [];
   }
 
   save() {
@@ -41,6 +42,16 @@ export class Db {
   get users() { return this.data.users; }
   getUser(id) { return this.data.users.find(u => u.id === id); }
   addUser(user) { this.data.users.push(user); this.save(); }
+
+  // --- voice notes ---
+  get notes() { return this.data.notes; }
+  addNote(note) { this.data.notes.push(note); this.save(); }
+  getNote(id) { return this.data.notes.find(n => n.id === id); }
+  notesForBook(bookId) { return this.data.notes.filter(n => n.bookId === bookId); }
+  deleteNote(id) {
+    const i = this.data.notes.findIndex(n => n.id === id);
+    if (i >= 0) { this.data.notes.splice(i, 1); this.save(); }
+  }
 
   // --- progress ---
   getProgress(userId, bookId) {

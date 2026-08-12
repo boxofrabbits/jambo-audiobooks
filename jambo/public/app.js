@@ -127,6 +127,8 @@ const player = {
   lastSavedPos: null,
   blobUrl: null,       // fallback object URL when direct streaming fails
   blobTriedFor: null,
+  notes: [],           // voice notes for the loaded book
+  _prevTick: null,
 
   get playing() { return this.book && !audio.paused && !audio.ended; },
 
@@ -143,6 +145,8 @@ const player = {
     if (this.book?.id === book.id) return;
     this.stop(false);
     this.book = book;
+    this.notes = book.notes || [];
+    this._prevTick = null;
     this.position = clamp(startPos || 0, 0, Math.max(0, book.duration - 1));
     this.trackIdx = this.trackForPos(this.position);
     this.setTrack(this.trackIdx, this.position - book.tracks[this.trackIdx].start, false);
@@ -200,6 +204,8 @@ const player = {
 
   seek(globalSec, thenPlay = this.playing) {
     if (!this.book) return;
+    // Scrubbing away while a note is playing dismisses the note.
+    if (notePlayer.playing) { notePlayer.stopAll(); setPlayerMessage(''); }
     globalSec = clamp(globalSec, 0, this.book.duration > 0 ? this.book.duration - 0.5 : Infinity);
     const idx = this.trackForPos(globalSec);
     const offset = globalSec - this.book.tracks[idx].start;
@@ -241,8 +247,11 @@ const player = {
     if (this.blobUrl) { URL.revokeObjectURL(this.blobUrl); this.blobUrl = null; }
     this.blobTriedFor = null;
     this.book = null;
+    this.notes = [];
+    this._prevTick = null;
     this.sleepDeadline = null;
     this.sleepChoice = 0;
+    notePlayer.stopAll();
     setMediaPlaybackState('none');
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
   },
@@ -250,9 +259,20 @@ const player = {
   onTick() {
     if (!this.book) return;
     const track = this.book.tracks[this.trackIdx];
+    const prev = this._prevTick ?? this.position;
     if (audio.readyState >= 1 && !audio.seeking) {
       this.position = track.start + audio.currentTime;
     }
+    // Partner notes fire when natural playback sweeps past them (not seeks).
+    const advanced = this.position - prev;
+    if (notePlayer.enabled && this.playing && advanced > 0 && advanced < 3) {
+      for (const n of this.notes) {
+        if (n.userId !== state.me?.id && n.position > prev && n.position <= this.position) {
+          notePlayer.trigger(n);
+        }
+      }
+    }
+    this._prevTick = this.position;
     if (this.sleepDeadline && Date.now() >= this.sleepDeadline) {
       audio.pause();
       this.sleepDeadline = null;
@@ -356,6 +376,118 @@ window.addEventListener('pagehide', () => player.beaconSave());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') player.beaconSave();
 });
+
+// ---------- voice notes ----------
+
+// Records mic audio via Web Audio and encodes 16-bit mono WAV client-side, so
+// notes recorded on Android play on iPhone and vice versa (MediaRecorder's
+// native formats don't cross over).
+const recorder = {
+  ctx: null, stream: null, proc: null, chunks: [], startedAt: 0, active: false,
+
+  async start() {
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await this.ctx.resume();
+    const src = this.ctx.createMediaStreamSource(this.stream);
+    this.proc = this.ctx.createScriptProcessor(4096, 1, 1);
+    const mute = this.ctx.createGain();
+    mute.gain.value = 0; // processor must be connected to run; keep it silent
+    this.chunks = [];
+    this.startedAt = Date.now();
+    this.active = true;
+    this.proc.onaudioprocess = (e) => {
+      if (this.active) this.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    };
+    src.connect(this.proc);
+    this.proc.connect(mute);
+    mute.connect(this.ctx.destination);
+  },
+
+  stop() {
+    this.active = false;
+    const sampleRate = this.ctx?.sampleRate || 48000;
+    const chunks = this.chunks;
+    this.proc?.disconnect();
+    this.stream?.getTracks().forEach(t => t.stop());
+    this.ctx?.close().catch(() => {});
+    this.ctx = this.stream = this.proc = null;
+    this.chunks = [];
+
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const seconds = total / sampleRate;
+    if (seconds < 0.7) return null;
+
+    const data = Buffer_writeWav(chunks, total, sampleRate);
+    return { blob: new Blob([data], { type: 'audio/wav' }), seconds };
+  },
+};
+
+function Buffer_writeWav(chunks, totalSamples, sampleRate) {
+  const buf = new ArrayBuffer(44 + totalSamples * 2);
+  const view = new DataView(buf);
+  const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + totalSamples * 2, true); writeStr(8, 'WAVE');
+  writeStr(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  writeStr(36, 'data'); view.setUint32(40, totalSamples * 2, true);
+  let off = 44;
+  for (const c of chunks) {
+    for (let i = 0; i < c.length; i++) {
+      view.setInt16(off, Math.max(-32768, Math.min(32767, Math.round(c[i] * 32767))), true);
+      off += 2;
+    }
+  }
+  return buf;
+}
+
+// Plays partner notes when the playhead crosses them (toggleable).
+const noteAudio = new Audio();
+const notePlayer = {
+  queue: [],
+  playing: null,
+  resumeAfter: false,
+
+  enabled: localStorage.getItem('jambo_notes_autoplay') !== '0',
+  setEnabled(on) {
+    this.enabled = on;
+    localStorage.setItem('jambo_notes_autoplay', on ? '1' : '0');
+  },
+
+  trigger(note) {
+    if (this.playing?.id === note.id || this.queue.some(n => n.id === note.id)) return;
+    this.queue.push(note);
+    if (!this.playing) this.next();
+  },
+
+  next() {
+    const note = this.queue.shift();
+    if (!note) {
+      this.playing = null;
+      if (this.resumeAfter && player.book) audio.play().catch(() => {});
+      this.resumeAfter = false;
+      setPlayerMessage('');
+      updatePlayerUI();
+      return;
+    }
+    this.playing = note;
+    if (player.playing) { this.resumeAfter = true; audio.pause(); }
+    setPlayerMessage(`🎙 Note from ${note.user?.name || 'your partner'}`);
+    noteAudio.src = rel(`api/notes/${note.id}/audio`);
+    noteAudio.play().catch(() => this.next());
+  },
+
+  stopAll() {
+    this.queue = [];
+    this.playing = null;
+    this.resumeAfter = false;
+    noteAudio.pause();
+    noteAudio.removeAttribute('src');
+  },
+};
+noteAudio.addEventListener('ended', () => notePlayer.next());
+noteAudio.addEventListener('error', () => notePlayer.next());
 
 // ---------- routing ----------
 
@@ -744,6 +876,7 @@ async function renderPlayer(bookId) {
   } else {
     player.book.me = book.me;
     player.book.partner = book.partner;
+    player.notes = book.notes || [];
     Object.assign(player.book, { tracks: book.tracks });
   }
 
@@ -757,9 +890,24 @@ async function renderPlayer(bookId) {
         avatarEl(partnerInfo.user, true),
         el('div', { class: 'stem', style: { background: partnerInfo.user.color } }))
     : null;
+  const noteDots = el('div', { class: 'note-dots' });
   const timeline = el('div', { class: 'timeline' },
     el('div', { class: 'timeline-track' }, fill),
-    thumb, partnerMarker);
+    noteDots, thumb, partnerMarker);
+
+  const renderNoteDots = () => {
+    if (!(book.duration > 0)) return;
+    noteDots.replaceChildren(...player.notes.map(n => {
+      const mine = n.userId === state.me?.id;
+      return el('button', {
+        class: 'note-dot',
+        title: mine ? 'Your note (tap to play)' : `Note from ${n.user?.name || 'partner'} (tap to play)`,
+        style: { left: `${clamp(n.position / book.duration, 0, 1) * 100}%`, background: n.user?.color || 'var(--accent)' },
+        onpointerdown: (e) => e.stopPropagation(),
+        onclick: (e) => { e.stopPropagation(); notePlayer.trigger(n); },
+      });
+    }));
+  };
   const elapsed = el('span', {}, '0:00');
   const remaining = el('span', {}, '-0:00');
 
@@ -797,6 +945,75 @@ async function renderPlayer(bookId) {
   const sleepChip = el('button', { class: 'chip-btn', onclick: () => { player.cycleSleep(); updatePlayerUI(); } });
   const messageLine = el('p', { class: 'error-msg', style: { textAlign: 'center', fontSize: '13px' } });
 
+  // --- voice notes: hold to record, toggle for auto-play ---
+  const notesChip = el('button', { class: 'chip-btn', onclick: () => {
+    notePlayer.setEnabled(!notePlayer.enabled);
+    updatePlayerUI();
+  } });
+
+  const micChip = el('button', { class: 'chip-btn mic-chip' }, '🎙 Hold');
+  micChip.addEventListener('contextmenu', (e) => e.preventDefault());
+  let recTimer = null;
+  let recWasPlaying = false;
+
+  const stopRecording = async (cancelled) => {
+    if (!recorder.active) return;
+    clearInterval(recTimer);
+    micChip.classList.remove('recording');
+    micChip.textContent = '🎙 Hold';
+    const result = recorder.stop();
+    if (recWasPlaying) audio.play().catch(() => {});
+    if (cancelled) return;
+    if (!result) { setPlayerMessage('Too short — hold the button while you speak.'); return; }
+    const notePos = player.position;
+    setPlayerMessage('Saving note…');
+    try {
+      const res = await fetch(rel(`api/notes?bookId=${encodeURIComponent(book.id)}&position=${notePos}`), {
+        method: 'POST', body: result.blob,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      player.notes.push(data.note);
+      renderNoteDots();
+      messageLine.replaceChildren(
+        `Note saved at ${fmtClock(notePos)} ✓ `,
+        el('button', { class: 'undo-btn', onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          await fetch(rel(`api/notes/${data.note.id}`), { method: 'DELETE' }).catch(() => {});
+          player.notes = player.notes.filter(n => n.id !== data.note.id);
+          renderNoteDots();
+          setPlayerMessage('');
+        } }, 'Undo'));
+      setTimeout(() => { if (messageLine.textContent.startsWith('Note saved')) setPlayerMessage(''); }, 8000);
+    } catch (e) {
+      setPlayerMessage(`Could not save note: ${e.message}`);
+    }
+  };
+
+  micChip.addEventListener('pointerdown', async (e) => {
+    e.preventDefault();
+    micChip.setPointerCapture(e.pointerId);
+    if (recorder.active) return;
+    recWasPlaying = player.playing;
+    try {
+      await recorder.start();
+    } catch {
+      setPlayerMessage('Microphone unavailable — check app permissions, or use Chrome/Safari.');
+      return;
+    }
+    if (recWasPlaying) audio.pause(); // don't record the book over your voice
+    micChip.classList.add('recording');
+    const t0 = Date.now();
+    micChip.textContent = '● 0s';
+    recTimer = setInterval(() => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      micChip.textContent = `● ${s}s`;
+      if (s >= 120) stopRecording(false); // hard cap
+    }, 500);
+  });
+  micChip.addEventListener('pointerup', () => stopRecording(false));
+  micChip.addEventListener('pointercancel', () => stopRecording(true));
+
   const trackLabel = el('div', { class: 'track-label' });
   const deltaNum = el('div', { class: 'delta-num' });
   const partnerStatus = el('div', { class: 'partner-status' });
@@ -829,14 +1046,15 @@ async function renderPlayer(bookId) {
       playBtn,
       el('button', { class: 'skip-btn small', html: ICONS.fwd30 + '<span class="skip-num">10</span>', onclick: () => player.skip(10) }),
       el('button', { class: 'skip-btn', html: ICONS.fwd30 + '<span class="skip-num">30</span>', onclick: () => player.skip(30) })),
-    el('div', { class: 'sub-controls' }, speedChip, sleepChip),
+    el('div', { class: 'sub-controls' }, speedChip, sleepChip, micChip, notesChip),
     messageLine,
     chapters,
   ));
+  renderNoteDots();
 
   playerUI = {
     book, fill, thumb, partnerMarker, elapsed, remaining, playBtn, speedChip, sleepChip,
-    trackLabel, deltaNum, partnerStatus, chapterRows, partnerInfo, messageLine,
+    trackLabel, deltaNum, partnerStatus, chapterRows, partnerInfo, messageLine, notesChip, renderNoteDots,
     getScrub: () => scrubPos,
     partnerProgress: partnerInfo?.progress || null,
   };
@@ -849,6 +1067,10 @@ async function renderPlayer(bookId) {
         const p = await api(`/api/books/${encodeURIComponent(book.id)}/progress`);
         if (playerUI?.book.id === book.id) {
           playerUI.partnerProgress = p.partner?.progress || null;
+          if (p.notes && player.book?.id === book.id) {
+            player.notes = p.notes;
+            playerUI.renderNoteDots();
+          }
           updatePlayerUI();
         }
       } catch { /* ignore */ }
@@ -876,6 +1098,8 @@ function updatePlayerUI() {
     const sleepMins = SLEEP_CHOICES[player.sleepChoice];
     ui.sleepChip.textContent = sleepMins ? `😴 ${sleepMins}m` : '😴 Off';
     ui.sleepChip.classList.toggle('active', !!sleepMins);
+    ui.notesChip.textContent = notePlayer.enabled ? '💬 On' : '💬 Off';
+    ui.notesChip.classList.toggle('active', notePlayer.enabled);
 
     if (book.tracks.length > 1) {
       ui.trackLabel.textContent = `Part ${player.trackIdx + 1} of ${book.tracks.length}`;
