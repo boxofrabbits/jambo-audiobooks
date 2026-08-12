@@ -242,6 +242,8 @@ const player = {
     this.book = null;
     this.sleepDeadline = null;
     this.sleepChoice = 0;
+    setMediaPlaybackState('none');
+    if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
   },
 
   onTick() {
@@ -331,14 +333,22 @@ function setPlayerMessage(msg) {
   if (msg) console.warn('[player]', msg);
 }
 
+// Keeping playbackState in sync makes the OS media notification show and
+// update reliably (same approach Music Assistant uses in the HA apps).
+function setMediaPlaybackState(s) {
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.playbackState = s; } catch { /* ignore */ }
+  }
+}
+
 audio.addEventListener('timeupdate', () => { player.onTick(); updatePlayerUI(); });
 audio.addEventListener('ended', () => player.onEnded());
 audio.addEventListener('error', () => {
   const codes = { 1: 'aborted', 2: 'network error', 3: 'decode error', 4: 'source not supported' };
   player.onMediaError(codes[audio.error?.code] || 'media error');
 });
-audio.addEventListener('play', () => updatePlayerUI());
-audio.addEventListener('pause', () => { player.saveProgress(true); updatePlayerUI(); });
+audio.addEventListener('play', () => { setMediaPlaybackState('playing'); updatePlayerUI(); });
+audio.addEventListener('pause', () => { setMediaPlaybackState('paused'); player.saveProgress(true); updatePlayerUI(); });
 
 window.addEventListener('pagehide', () => player.beaconSave());
 document.addEventListener('visibilitychange', () => {
