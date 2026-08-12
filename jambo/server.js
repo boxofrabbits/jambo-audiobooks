@@ -417,6 +417,10 @@ function safeEntryName(raw) {
   return name;
 }
 
+// Chunked and resumable: the client sends 6MB pieces with ?offset=N&last=0|1.
+// If a chunk arrives at the wrong offset (retry after a dropped connection),
+// the server answers 409 with how many bytes it already has, and the client
+// resumes from there — so a dead connection at 25% continues at 25%.
 app.post('/api/upload', requireAuth, (req, res) => {
   const book = safeEntryName(req.query.book);
   const filename = safeEntryName(req.query.filename);
@@ -429,22 +433,36 @@ app.post('/api/upload', requireAuth, (req, res) => {
   const finalPath = path.join(dir, filename);
   const tmpPath = finalPath + '.uploading';
 
+  const chunked = req.query.offset !== undefined;
+  const offset = chunked ? Number(req.query.offset) : 0;
+  const last = chunked ? req.query.last === '1' : true;
+  if (!Number.isInteger(offset) || offset < 0) return res.status(400).json({ error: 'bad_offset' });
+
+  let have = 0;
+  try { have = fs.statSync(tmpPath).size; } catch { /* no partial yet */ }
+  if (chunked && offset !== have) {
+    req.resume();
+    return res.status(409).json({ error: 'offset_mismatch', have });
+  }
+
   let bytes = 0;
   let failed = false;
-  const ws = fs.createWriteStream(tmpPath);
+  const ws = fs.createWriteStream(tmpPath, { flags: chunked && offset > 0 ? 'a' : 'w' });
 
   const fail = (status, error) => {
     if (failed) return;
     failed = true;
     ws.destroy();
-    fs.rm(tmpPath, { force: true }, () => {});
     req.destroy();
     if (!res.headersSent) res.status(status).json({ error });
   };
 
   req.on('data', (c) => {
     bytes += c.length;
-    if (bytes > MAX_UPLOAD_BYTES) fail(413, 'file_too_large');
+    if (offset + bytes > MAX_UPLOAD_BYTES) {
+      fs.rm(tmpPath, { force: true }, () => {});
+      fail(413, 'file_too_large');
+    }
   });
   req.on('error', () => fail(500, 'upload_interrupted'));
   ws.on('error', (err) => {
@@ -454,9 +472,11 @@ app.post('/api/upload', requireAuth, (req, res) => {
   ws.on('finish', () => {
     if (failed) return;
     try {
-      fs.renameSync(tmpPath, finalPath);
-      console.log(`[upload] ${req.user.name} added ${book}/${filename} (${(bytes / 1e6).toFixed(1)} MB)`);
-      res.json({ ok: true, bytes });
+      if (last) {
+        fs.renameSync(tmpPath, finalPath);
+        console.log(`[upload] ${req.user.name} added ${book}/${filename} (${((offset + bytes) / 1e6).toFixed(1)} MB)`);
+      }
+      res.json({ ok: true, have: offset + bytes, done: last });
     } catch (err) {
       console.error('[upload] finalize failed:', err.message);
       fail(500, 'disk_write_failed');

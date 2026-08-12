@@ -824,18 +824,47 @@ function renderUpload() {
     renderFileList();
   });
 
-  // XHR instead of fetch for real upload progress events.
-  const uploadOne = (file, folder, onProgress) => new Promise((resolve, reject) => {
+  // Chunked + resumable. XHR (not fetch) for real upload progress events.
+  // Each 6MB piece retries with backoff; a 409 from the server tells us how
+  // much it already has, so interrupted uploads resume instead of restarting.
+  const CHUNK_BYTES = 6 * 1024 * 1024;
+  const sendChunk = (url, blob, onProgress) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', rel(`api/upload?book=${encodeURIComponent(folder)}&filename=${encodeURIComponent(file.name)}`));
+    xhr.open('POST', url);
+    xhr.timeout = 120000;
     xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); });
     xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(JSON.parse(xhr.responseText || '{}').error || `HTTP ${xhr.status}`));
+      const data = (() => { try { return JSON.parse(xhr.responseText); } catch { return {}; } })();
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(Object.assign(new Error(data.error || `HTTP ${xhr.status}`), { status: xhr.status, have: data.have }));
     });
     xhr.addEventListener('error', () => reject(new Error('network error')));
-    xhr.send(file);
+    xhr.addEventListener('timeout', () => reject(new Error('timed out')));
+    xhr.send(blob);
   });
+
+  const uploadOne = async (file, folder, onProgress) => {
+    let offset = 0;
+    let retries = 0;
+    while (offset < file.size || file.size === 0) {
+      const chunk = file.slice(offset, offset + CHUNK_BYTES);
+      const isLast = offset + chunk.size >= file.size;
+      const url = rel(`api/upload?book=${encodeURIComponent(folder)}&filename=${encodeURIComponent(file.name)}`
+        + `&offset=${offset}&last=${isLast ? 1 : 0}`);
+      try {
+        const r = await sendChunk(url, chunk, (frac) => onProgress((offset + frac * chunk.size) / (file.size || 1)));
+        offset = r.have ?? offset + chunk.size;
+        retries = 0;
+        if (r.done) break;
+      } catch (e) {
+        if (e.status === 409 && Number.isInteger(e.have)) { offset = e.have; continue; }
+        if (e.status && e.status !== 409 && e.status < 500) throw e; // 4xx: not retryable
+        if (++retries > 6) throw e;
+        status.textContent = `Connection hiccup (${e.message}) — retrying…`;
+        await new Promise(r2 => setTimeout(r2, Math.min(15000, 1000 * 2 ** retries)));
+      }
+    }
+  };
 
   submitBtn.addEventListener('click', async () => {
     if (uploading) return;
