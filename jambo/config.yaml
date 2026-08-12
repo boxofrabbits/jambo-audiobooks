@@ -1,5 +1,5 @@
 name: Jambo Audiobooks
-version: "1.4.1"
+version: "1.5.0"
 slug: jambo
 description: Shared audiobook player for two — see each other's progress on the timeline
 arch:
@@ -19,11 +19,13 @@ map:
 options:
   books_dir: /share/jambo/books
   overtake_notifications: []
+  listening_notifications: true
 schema:
   books_dir: str
   overtake_notifications:
     - profile: str
       service: str
+  listening_notifications: bool
 ports:
   3000/tcp: null
 ports_description:

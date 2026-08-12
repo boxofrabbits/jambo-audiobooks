@@ -135,6 +135,13 @@ overtake_notifications:
 `notify.mobile_app_`.) Only natural listening triggers it — skipping past
 someone doesn't count — and it fires at most once per half hour per book.
 
+With the same services configured, a quiet **"Kiki is listening 🎧"**
+notification also appears on the other person's phone while a session is
+active — showing the book, how far in they are, and your gap — updating
+silently in place and clearing itself a couple of minutes after they stop.
+Set `listening_notifications: false` in the add-on configuration to turn
+that off.
+
 ## Voice notes
 
 In the player, **hold the 🎙 button** and speak — releasing saves a voice note

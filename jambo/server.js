@@ -17,9 +17,11 @@ let BOOKS_DIR = process.env.BOOKS_DIR || path.join(__dirname, 'books');
 // Running as a Home Assistant add-on: options from the add-on's Configuration
 // tab land in /data/options.json and override the env default.
 let NOTIFY_SERVICES = new Map(); // lowercased profile name -> notify service
+let LISTENING_NOTIFICATIONS = true;
 try {
   const opts = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'options.json'), 'utf8'));
   if (opts.books_dir) BOOKS_DIR = opts.books_dir;
+  if (opts.listening_notifications === false) LISTENING_NOTIFICATIONS = false;
   for (const entry of opts.overtake_notifications || []) {
     const service = String(entry.service || '').replace(/^notify\./, '');
     if (entry.profile && /^[a-z0-9_]+$/.test(service)) {
@@ -291,12 +293,7 @@ const fmtGap = (sec) => {
 };
 const overtakeCooldown = new Map(); // `${passerId}:${bookId}` -> timestamp
 
-async function notifyOvertake(passer, passed, book, newPos, partnerPos) {
-  const service = NOTIFY_SERVICES.get(passed.name.toLowerCase());
-  if (!service || !process.env.SUPERVISOR_TOKEN) return;
-  const key = `${passer.id}:${book.id}`;
-  if (Date.now() - (overtakeCooldown.get(key) || 0) < 30 * 60e3) return;
-  overtakeCooldown.set(key, Date.now());
+async function haNotify(service, payload, label) {
   try {
     const res = await fetch(`${SUPERVISOR_URL}/core/api/services/notify/${service}`, {
       method: 'POST',
@@ -304,17 +301,80 @@ async function notifyOvertake(passer, passed, book, newPos, partnerPos) {
         Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        title: 'Jambo 📖',
-        message: `${passer.name} just passed you in “${book.title}” — you're now ${fmtGap(newPos - partnerPos)} behind 👀`,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    console.log(`[notify] told ${passed.name} that ${passer.name} passed them in "${book.title}"`);
+    if (label) console.log(`[notify] ${label}`);
   } catch (err) {
-    console.warn(`[notify] failed to notify ${passed.name}: ${err.message}`);
+    console.warn(`[notify] failed (${label || 'notification'}): ${err.message}`);
   }
 }
+
+function notifyOvertake(passer, passed, book, newPos, partnerPos) {
+  const service = NOTIFY_SERVICES.get(passed.name.toLowerCase());
+  if (!service || !process.env.SUPERVISOR_TOKEN) return;
+  const key = `${passer.id}:${book.id}`;
+  if (Date.now() - (overtakeCooldown.get(key) || 0) < 30 * 60e3) return;
+  overtakeCooldown.set(key, Date.now());
+  haNotify(service, {
+    title: 'Jambo 📖',
+    message: `${passer.name} just passed you in “${book.title}” — you're now ${fmtGap(newPos - partnerPos)} behind 👀`,
+  }, `told ${passed.name} that ${passer.name} passed them in "${book.title}"`);
+}
+
+// Ambient "now listening" notification on the partner's phone: silently
+// refreshed (same tag replaces in place) while listening, cleared after ~2
+// minutes of no progress saves.
+const LISTEN_STALE_MS = Number(process.env.LISTEN_STALE_MS || 120e3);
+const LISTEN_PUSH_INTERVAL_MS = Number(process.env.LISTEN_PUSH_INTERVAL_MS || 60e3);
+const listenSessions = new Map(); // listenerId -> {bookId, lastAt, lastPushAt, cleared}
+
+function updateListeningNotification(listener, partner, book, pos) {
+  if (!LISTENING_NOTIFICATIONS || !process.env.SUPERVISOR_TOKEN) return;
+  const service = NOTIFY_SERVICES.get(partner.name.toLowerCase());
+  if (!service) return;
+  let s = listenSessions.get(listener.id);
+  if (!s || s.bookId !== book.id) {
+    s = { bookId: book.id, lastAt: 0, lastPushAt: 0, cleared: true };
+    listenSessions.set(listener.id, s);
+  }
+  s.lastAt = Date.now();
+  if (Date.now() - s.lastPushAt < LISTEN_PUSH_INTERVAL_MS) return;
+  s.lastPushAt = Date.now();
+  s.cleared = false;
+
+  const partnerProg = db.getProgress(partner.id, book.id);
+  let gap = '';
+  if (partnerProg && !partnerProg.finished) {
+    const diff = pos - partnerProg.position;
+    gap = Math.abs(diff) <= 60 ? " — you're at the same spot!" : ` — you're ${fmtGap(Math.abs(diff))} ${diff > 0 ? 'behind' : 'ahead'}`;
+  }
+  haNotify(service, {
+    title: `${listener.name} is listening 🎧`,
+    message: `${book.title}: ${fmtGap(pos)} in${gap}`,
+    data: {
+      tag: `jambo_listening_${listener.id}`,
+      channel: 'Jambo listening',
+      importance: 'low',
+      notification_icon: 'mdi:book-play',
+    },
+  });
+}
+
+setInterval(() => {
+  for (const [listenerId, s] of listenSessions) {
+    if (s.cleared || Date.now() - s.lastAt < LISTEN_STALE_MS) continue;
+    s.cleared = true;
+    const partner = db.users.find(u => u.id !== listenerId);
+    const service = partner && NOTIFY_SERVICES.get(partner.name.toLowerCase());
+    if (service && process.env.SUPERVISOR_TOKEN) {
+      haNotify(service, {
+        message: 'clear_notification',
+        data: { tag: `jambo_listening_${listenerId}` },
+      }, `cleared listening notification for ${partner.name}`);
+    }
+  }
+}, Math.min(30e3, LISTEN_STALE_MS / 2)).unref();
 
 // POST is accepted too because sendBeacon (used for unload-time saves) can only POST.
 const saveProgress = (req, res) => {
@@ -334,11 +394,11 @@ const saveProgress = (req, res) => {
   const partner = db.users.find(u => u.id !== req.user.id);
   const partnerProg = partner && db.getProgress(partner.id, book.id);
   const step = pos - prevPos;
-  if (
-    partnerProg && !partnerProg.finished && step > 0 && step < 60 &&
-    prevPos <= partnerProg.position && pos > partnerProg.position
-  ) {
-    notifyOvertake(req.user, partner, book, pos, partnerProg.position);
+  if (partner && step > 0 && step < 60) {
+    updateListeningNotification(req.user, partner, book, pos);
+    if (partnerProg && !partnerProg.finished && prevPos <= partnerProg.position && pos > partnerProg.position) {
+      notifyOvertake(req.user, partner, book, pos, partnerProg.position);
+    }
   }
 };
 app.put('/api/progress', requireAuth, saveProgress);
