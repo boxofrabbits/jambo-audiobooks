@@ -330,8 +330,18 @@ const player = {
     });
     ms.setActionHandler('play', () => this.toggle());
     ms.setActionHandler('pause', () => this.toggle());
-    ms.setActionHandler('seekbackward', (e) => this.skip(-(e?.seekOffset || 30)));
-    ms.setActionHandler('seekforward', (e) => this.skip(e?.seekOffset || 30));
+    // Lock-screen button layouts differ per OS. Android reliably shows
+    // prev/next track buttons but often hides seek actions, so prev/next
+    // double as ±30s skips. On Apple platforms registering seekforward/
+    // backward hides prev/next entirely (Music Assistant's finding), so
+    // there we register ONLY prev/next-as-skips to get two visible buttons.
+    const apple = /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent);
+    ms.setActionHandler('previoustrack', () => this.skip(-30));
+    ms.setActionHandler('nexttrack', () => this.skip(30));
+    if (!apple) {
+      ms.setActionHandler('seekbackward', (e) => this.skip(-(e?.seekOffset || 30)));
+      ms.setActionHandler('seekforward', (e) => this.skip(e?.seekOffset || 30));
+    }
     try {
       ms.setActionHandler('seekto', (e) => { if (e.seekTime != null) this.seek(e.seekTime); });
     } catch { /* not supported */ }
