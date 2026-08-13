@@ -113,6 +113,14 @@ export class Db {
     this.save();
   }
 
+  // --- cached book metadata (synopsis, genres) ---
+  getBookMeta(bookId) { return this.data.bookMeta?.[bookId] || null; }
+  setBookMeta(bookId, meta) {
+    if (!this.data.bookMeta) this.data.bookMeta = {};
+    this.data.bookMeta[bookId] = meta;
+    this.save();
+  }
+
   // --- on-deck row hiding (per viewer) ---
   hideFromDeck(userId, bookId) {
     if (!this.data.deckHidden) this.data.deckHidden = {};

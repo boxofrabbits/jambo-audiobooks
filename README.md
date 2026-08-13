@@ -162,6 +162,12 @@ organised into folders: give a book a Folder name when uploading, or over
 Samba nest book folders one level deep (`books/Fantasy/Author - Title/…`) —
 each folder becomes a section in the library.
 
+The library has a search box (title, author, genre, folder) and sort options
+(title / author / newest / longest). Book details — synopsis, genres, year —
+are fetched automatically from Google Books and Open Library after each scan
+and shown in the player under "About"; the upload screen can look a book up
+online and autofill the author and title for you.
+
 ## Voice notes
 
 In the player, **hold the 🎙 button** and speak — releasing saves a voice note

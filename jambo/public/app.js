@@ -811,8 +811,22 @@ async function renderLibrary() {
         ' (with a cover.jpg if you have one), then tap rescan.'),
     )));
   } else {
+    const sections = el('div', { class: 'lib-sections' });
+    const searchBox = el('input', { class: 'lib-search', placeholder: '🔍 Search title, author, genre…' });
+    const sortSel = el('select', { class: 'lib-sort' },
+      [['title', 'Title'], ['author', 'Author'], ['newest', 'Newest'], ['longest', 'Longest']].map(([v, label]) =>
+        el('option', { value: v }, label)));
+    sortSel.value = localStorage.getItem('jambo_sort') || 'title';
+    const refresh = () => {
+      localStorage.setItem('jambo_sort', sortSel.value);
+      sections.replaceChildren(...librarySections(data.books, searchBox.value, sortSel.value));
+    };
+    searchBox.addEventListener('input', refresh);
+    sortSel.addEventListener('change', refresh);
+    refresh();
     spinner.replaceWith(el('div', {}, ...banners,
-      el('div', { class: 'lib-sections' }, ...librarySections(data.books))));
+      el('div', { class: 'lib-toolbar' }, searchBox, sortSel),
+      sections));
   }
 
   if (player.book) screen.append(miniPlayerEl());
@@ -831,8 +845,28 @@ async function renderLibraryQuietly(screen) {
   } catch { /* ignore */ }
 }
 
-// Books grouped by their collection folder; ungrouped books first.
-function librarySections(books) {
+// Books grouped by their collection folder; ungrouped books first. A search
+// query flattens the groups into one filtered grid.
+const SORTERS = {
+  title: (a, b) => a.title.localeCompare(b.title),
+  author: (a, b) => (a.author || '~').localeCompare(b.author || '~') || a.title.localeCompare(b.title),
+  newest: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
+  longest: (a, b) => (b.duration || 0) - (a.duration || 0),
+};
+
+function librarySections(books, query = '', sort = 'title') {
+  const sorter = SORTERS[sort] || SORTERS.title;
+  const q = query.trim().toLowerCase();
+  if (q) {
+    const hits = books.filter(b =>
+      b.title.toLowerCase().includes(q)
+      || (b.author || '').toLowerCase().includes(q)
+      || (b.folder || '').toLowerCase().includes(q)
+      || (b.genres || []).some(g => g.toLowerCase().includes(q))).sort(sorter);
+    return [hits.length
+      ? el('div', { class: 'book-grid' }, hits.map(bookCard))
+      : el('p', { class: 'empty-lib', style: { marginTop: '40px' } }, 'No matches.')];
+  }
   const groups = new Map();
   for (const b of books) {
     const key = b.folder || '';
@@ -842,7 +876,7 @@ function librarySections(books) {
   const keys = [...groups.keys()].sort((a, b) => (b === '') - (a === '') || a.localeCompare(b));
   return keys.map(key => el('div', {},
     key ? el('h2', { class: 'folder-header serif' }, '📁 ', key) : null,
-    el('div', { class: 'book-grid' }, groups.get(key).map(bookCard))));
+    el('div', { class: 'book-grid' }, groups.get(key).sort(sorter).map(bookCard))));
 }
 
 function bookCard(book) {
@@ -871,6 +905,7 @@ function bookCard(book) {
     cover,
     el('div', { class: 'book-title' }, book.title),
     book.author ? el('div', { class: 'book-author' }, book.author) : null,
+    book.genres?.length ? el('div', { class: 'book-genre' }, book.genres.slice(0, 2).join(' · ')) : null,
     el('div', { class: 'mini-bars' },
       barRow(state.me.name.charAt(0).toUpperCase(), state.me.color, book.me),
       partner ? barRow(partner.user.name.charAt(0).toUpperCase(), partner.user.color, partner.progress) : null),
@@ -905,6 +940,35 @@ function renderUpload() {
 
   const author = el('input', { placeholder: 'e.g. Ursula K. Le Guin (optional)' });
   const title = el('input', { placeholder: 'e.g. A Wizard of Earthsea' });
+
+  // Look up the book online and autofill author/title.
+  const lookupInput = el('input', { placeholder: 'e.g. wizard of earthsea' });
+  const lookupResults = el('div', { class: 'lookup-results' });
+  let lookupTimer = null;
+  lookupInput.addEventListener('input', () => {
+    clearTimeout(lookupTimer);
+    const q = lookupInput.value.trim();
+    if (q.length < 3) { lookupResults.replaceChildren(); return; }
+    lookupTimer = setTimeout(async () => {
+      lookupResults.replaceChildren(el('div', { class: 'lookup-hint' }, 'Searching…'));
+      try {
+        const { results } = await api(`/api/booksearch?q=${encodeURIComponent(q)}`);
+        if (lookupInput.value.trim() !== q) return; // stale response
+        lookupResults.replaceChildren(...(results.length ? results.map(r =>
+          el('button', { class: 'lookup-row', onclick: () => {
+            title.value = r.title;
+            author.value = r.author;
+            lookupResults.replaceChildren();
+            lookupInput.value = '';
+          } },
+            el('span', {}, r.title),
+            el('span', { class: 'dur' }, [r.author, r.year].filter(Boolean).join(' · '))))
+          : [el('div', { class: 'lookup-hint' }, 'Nothing found — fill the fields in manually.')]));
+      } catch {
+        lookupResults.replaceChildren(el('div', { class: 'lookup-hint' }, 'Search unavailable — fill the fields in manually.'));
+      }
+    }, 500);
+  });
   const existingFolders = [...new Set((state.booksCache || []).map(b => b.folder).filter(Boolean))].sort();
   const folderField = el('input', { placeholder: 'e.g. Fantasy (optional)', list: 'jambo-folders' });
   const folderDatalist = el('datalist', { id: 'jambo-folders' },
@@ -1031,6 +1095,9 @@ function renderUpload() {
       state.me ? avatarEl(state.me, true) : null),
     el('div', { class: 'setup-card', style: { marginTop: '8px' } },
       el('h3', {}, 'Add a book'),
+      el('div', { class: 'field' },
+        el('label', {}, 'Look up the book — tap a match to autofill'),
+        lookupInput, lookupResults),
       el('div', { class: 'field' }, el('label', {}, 'Author'), author),
       el('div', { class: 'field' }, el('label', {}, 'Title'), title),
       el('div', { class: 'field' }, el('label', {}, 'Folder — group books into a section on the home screen'), folderField, folderDatalist),
@@ -1044,6 +1111,29 @@ function renderUpload() {
     el('p', { class: 'tagline', style: { fontSize: '12.5px', textAlign: 'center' } },
       'Parts play in filename order — name them 01, 02, 03… Big books over slow connections can take a while; keep the app open until it finishes.'),
   ));
+}
+
+// Genres + synopsis under the player controls, collapsed by default.
+function aboutSection(book) {
+  if (!book.genres?.length && !book.description) {
+    return el('div', { class: 'about-section', style: { textAlign: 'center' } },
+      el('button', { class: 'about-more', onclick: async (e) => {
+        e.currentTarget.textContent = 'Searching…';
+        await api(`/api/books/${encodeURIComponent(book.id)}/enrich`, { method: 'POST' }).catch(() => {});
+        renderPlayer(book.id);
+      } }, '🔍 Find book info'));
+  }
+  const chips = (book.genres || []).map(g => el('span', { class: 'genre-chip' }, g));
+  if (book.year) chips.push(el('span', { class: 'genre-chip' }, book.year));
+  if (!book.description) return el('div', { class: 'about-section' }, el('div', { class: 'genre-chips' }, chips));
+  const text = el('p', { class: 'about-text clamped' }, book.description);
+  const moreBtn = el('button', { class: 'about-more', onclick: () => {
+    const open = text.classList.toggle('clamped');
+    moreBtn.textContent = open ? 'More' : 'Less';
+  } }, 'More');
+  return el('div', { class: 'about-section' },
+    el('div', { class: 'genre-chips' }, chips),
+    text, moreBtn);
 }
 
 // ---------- player screen ----------
@@ -1240,6 +1330,7 @@ async function renderPlayer(bookId) {
       el('button', { class: 'skip-btn', html: ICONS.fwd30 + '<span class="skip-num">30</span>', onclick: () => player.skip(30) })),
     el('div', { class: 'sub-controls' }, speedChip, sleepChip, micChip, notesChip),
     messageLine,
+    aboutSection(book),
     chapters,
   ));
   renderNoteDots();

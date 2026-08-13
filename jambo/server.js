@@ -9,6 +9,7 @@ import {
 } from './lib/auth.js';
 import { scanLibrary, AUDIO_EXT, IMAGE_EXT } from './lib/scan.js';
 import { syncSampleBook } from './lib/sample.js';
+import { fetchBookMeta, searchBooks } from './lib/enrich.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -97,9 +98,34 @@ async function rescan() {
       } catch (err) { console.warn('[sample]', err.message); }
       bookById = new Map(books.map(b => [b.id, b]));
       console.log(`[scan] ${books.length} book(s) across ${BOOKS_ROOTS.join(', ')}${missingBooks.length ? ` — MISSING: ${missingBooks.join(', ')}` : ''}`);
+      enrichMissing();
     })().finally(() => { scanning = null; });
   }
   return scanning;
+}
+
+// Background metadata lookup for books that don't have any yet. Failed
+// lookups are retried after a week; one book per second to be polite.
+const SAMPLE_ID = 'jambo-demo-sample-book';
+let enriching = false;
+async function enrichMissing() {
+  if (enriching) return;
+  enriching = true;
+  try {
+    for (const book of books) {
+      if (book.id === SAMPLE_ID) continue;
+      const cached = db.getBookMeta(book.id);
+      if (cached && (cached.found || Date.now() - cached.fetchedAt < 7 * 864e5)) continue;
+      const meta = await fetchBookMeta(book.title, book.author);
+      db.setBookMeta(book.id, meta
+        ? { ...meta, found: true, fetchedAt: Date.now() }
+        : { found: false, fetchedAt: Date.now() });
+      if (meta) console.log(`[enrich] ${book.title}: ${meta.genres.join(', ') || 'no genres'} (${meta.source})`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } finally {
+    enriching = false;
+  }
 }
 
 const app = express();
@@ -152,11 +178,15 @@ function progressFor(userId, book) {
 
 function bookSummary(book, meId) {
   const partner = db.users.find(u => u.id !== meId);
+  const meta = db.getBookMeta(book.id);
   return {
     id: book.id,
     title: book.title,
     author: book.author,
     folder: book.folder || null,
+    genres: meta?.found ? meta.genres : [],
+    year: meta?.found ? meta.year : '',
+    addedAt: book.addedAt || 0,
     duration: book.duration,
     trackCount: book.tracks.length,
     hasCover: !!book.coverPath,
@@ -297,12 +327,33 @@ app.post('/api/rescan', requireAuth, async (req, res) => {
 app.get('/api/books/:id', requireAuth, (req, res) => {
   const book = bookById.get(req.params.id);
   if (!book) return res.status(404).json({ error: 'not_found' });
+  const meta = db.getBookMeta(book.id);
   res.json({
     ...bookSummary(book, req.user.id),
     tracks: book.tracks.map(t => ({ idx: t.idx, title: t.title, duration: t.duration, start: t.start })),
     chapters: (book.chapters || []).map(c => ({ title: c.title, start: c.start, duration: c.duration })),
     notes: notesForClient(book.id),
+    description: meta?.found ? meta.description : '',
+    metaSource: meta?.found ? meta.source : null,
   });
+});
+
+// Book lookup for the upload screen's autofill.
+app.get('/api/booksearch', requireAuth, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.json({ results: [] });
+  res.json({ results: await searchBooks(q) });
+});
+
+// Manual metadata refresh (the "find book info" button).
+app.post('/api/books/:id/enrich', requireAuth, async (req, res) => {
+  const book = bookById.get(req.params.id);
+  if (!book) return res.status(404).json({ error: 'not_found' });
+  const meta = await fetchBookMeta(book.title, book.author);
+  db.setBookMeta(book.id, meta
+    ? { ...meta, found: true, fetchedAt: Date.now() }
+    : { found: false, fetchedAt: Date.now() });
+  res.json({ ok: true, found: !!meta });
 });
 
 // ---------- voice notes ----------

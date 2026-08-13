@@ -221,6 +221,7 @@ export async function scanLibrary(booksDirs, cacheFile) {
       id: slug(dirName),
       dirName,
       folder,
+      addedAt: (() => { try { return fs.statSync(dirPath).mtimeMs; } catch { return 0; } })(),
       title,
       author,
       coverPath: coverName ? path.join(dirPath, coverName) : null,

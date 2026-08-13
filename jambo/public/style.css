@@ -420,6 +420,45 @@ input:focus { border-color: var(--accent); }
 }
 .chip-btn.active { color: var(--accent); }
 
+/* about + genres */
+.about-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.genre-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.genre-chip {
+  background: var(--bg-raise);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11.5px;
+}
+.about-text { color: var(--text-dim); font-size: 13.5px; line-height: 1.55; }
+.about-text.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.about-more { color: var(--accent); font-size: 13px; margin-top: 4px; }
+
+/* library toolbar + lookup */
+.lib-toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
+.lib-search { flex: 1; }
+.lib-sort {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raise-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 10px;
+}
+.book-genre { color: var(--text-faint); font-size: 11px; }
+.lookup-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.lookup-row {
+  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+  background: var(--bg-raise-2);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  text-align: left;
+}
+.lookup-row:active { background: var(--bg); }
+.lookup-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lookup-hint { color: var(--text-faint); font-size: 12.5px; padding: 4px 2px; }
+
 /* chapters */
 .chapters { margin-top: 10px; border-top: 1px solid var(--line); }
 .chapter-row {
