@@ -1304,6 +1304,23 @@ async function renderPlayer(bookId) {
 
   // --- chapters (from a cue sheet when present, otherwise one per file) ---
   const chapterList = book.chapters?.length ? book.chapters : book.tracks;
+  const chapterIdx = () => {
+    let ci = 0;
+    for (let i = 0; i < chapterList.length; i++) if (player.position >= chapterList[i].start - 0.5) ci = i;
+    return ci;
+  };
+  const chapterSkip = (dir) => {
+    const ci = chapterIdx();
+    if (dir > 0) {
+      if (ci + 1 < chapterList.length) player.seek(chapterList[ci + 1].start + 0.01, true);
+    } else {
+      // Standard player behavior: restart the current chapter, unless we're
+      // right at its start — then go to the previous one.
+      const atStart = player.position - chapterList[ci].start <= 3;
+      const target = atStart && ci > 0 ? chapterList[ci - 1] : chapterList[ci];
+      player.seek(target.start + 0.01, true);
+    }
+  };
   const chapterRows = chapterList.map(c =>
     el('button', { class: 'chapter-row', onclick: () => player.seek(c.start + 0.01, true) },
       el('span', {}, c.title),
@@ -1328,6 +1345,9 @@ async function renderPlayer(bookId) {
       playBtn,
       el('button', { class: 'skip-btn small', html: ICONS.fwd30 + '<span class="skip-num">10</span>', onclick: () => player.skip(10) }),
       el('button', { class: 'skip-btn', html: ICONS.fwd30 + '<span class="skip-num">30</span>', onclick: () => player.skip(30) })),
+    chapterList.length > 1 ? el('div', { class: 'sub-controls' },
+      el('button', { class: 'chip-btn', onclick: () => chapterSkip(-1) }, '⏮ Chapter'),
+      el('button', { class: 'chip-btn', onclick: () => chapterSkip(1) }, 'Chapter ⏭')) : null,
     el('div', { class: 'sub-controls' }, speedChip, sleepChip, micChip, notesChip),
     messageLine,
     aboutSection(book),
