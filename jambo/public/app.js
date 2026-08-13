@@ -909,7 +909,9 @@ function renderUpload() {
   const folderField = el('input', { placeholder: 'e.g. Fantasy (optional)', list: 'jambo-folders' });
   const folderDatalist = el('datalist', { id: 'jambo-folders' },
     existingFolders.map(f => el('option', { value: f })));
-  const fileInput = el('input', { type: 'file', multiple: '', accept: 'audio/*,image/*,.m4b,.opus,.cue' });
+  // No accept filter: Android's picker refuses files with unknown MIME types
+  // (like .cue) when one is set. The server validates extensions instead.
+  const fileInput = el('input', { type: 'file', multiple: '' });
   const fileList = el('div', { class: 'upload-list' });
   const status = el('p', { class: 'error-msg', style: { textAlign: 'center' } });
   const progressFill = el('div', { style: { width: '0%', background: 'var(--accent)' } });
@@ -932,8 +934,11 @@ function renderUpload() {
           renderFileList();
         } }, '✕'))));
   };
+  const UPLOAD_OK = /\.(mp3|wav|m4a|m4b|aac|ogg|opus|flac|jpe?g|png|webp|gif|cue)$/i;
   fileInput.addEventListener('change', () => {
+    status.textContent = '';
     for (const f of fileInput.files) {
+      if (!UPLOAD_OK.test(f.name)) { status.textContent = `Skipped ${f.name} — not an audio, image, or cue file.`; continue; }
       if (!files.some(x => x.name === f.name && x.size === f.size)) files.push(f);
     }
     fileInput.value = ''; // so picking again (even the same file) re-fires change
