@@ -49,14 +49,10 @@ const secret = loadSecret(DATA_DIR);
 const BOOKS_ROOTS = [...new Set([BOOKS_DIR, ...(IS_ADDON ? ['/share/jambo/books'] : [])])];
 console.log(`[storage] addon=${IS_ADDON} data=${DATA_DIR} books=${BOOKS_ROOTS.join(', ')}`);
 
-// If the configured folder didn't exist at startup (e.g. an unmounted USB
-// drive), creating it and carrying on would strand uploads in a folder that
-// may not persist — surface that loudly instead.
+// Re-evaluated at every scan: warn only when the books folder genuinely can't
+// be reached (a first-run auto-create is normal, not a problem). Books that
+// have progress but no files get their own missing-books banner.
 let storageWarning = null;
-if (!fs.existsSync(BOOKS_DIR)) {
-  storageWarning = `Books folder ${BOOKS_DIR} did not exist at startup — if this should be a USB drive, check that it is actually mounted before uploading.`;
-  console.warn(`[storage] ${storageWarning}`);
-}
 
 const SAMPLE_SLUG = 'jambo-demo-sample-book';
 
@@ -78,6 +74,13 @@ function findMissingBooks() {
 async function rescan() {
   if (!scanning) {
     scanning = (async () => {
+      try {
+        fs.mkdirSync(BOOKS_DIR, { recursive: true });
+        storageWarning = null;
+      } catch (err) {
+        storageWarning = `Books folder ${BOOKS_DIR} is not accessible (${err.message}) — check the drive or mount, then rescan.`;
+        console.warn(`[storage] ${storageWarning}`);
+      }
       const cacheFile = path.join(DATA_DIR, 'scan-cache.json');
       books = await scanLibrary(BOOKS_ROOTS, cacheFile);
       missingBooks = findMissingBooks();
