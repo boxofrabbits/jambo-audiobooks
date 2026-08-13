@@ -584,6 +584,8 @@ const notePlayer = {
     if (!this.playing) this.next();
   },
 
+  _blobUrl: null,
+
   next() {
     const note = this.queue.shift();
     if (!note) {
@@ -597,8 +599,22 @@ const notePlayer = {
     this.playing = note;
     if (player.playing) { this.resumeAfter = true; audio.pause(); }
     setPlayerMessage(`🎙 Note from ${note.user?.name || 'your partner'}`);
-    noteAudio.src = rel(`api/notes/${note.id}/audio`);
-    noteAudio.play().catch(() => this.next());
+    // Always play notes from memory: webview media elements (HA companion
+    // apps) fetch <audio> sources without session cookies, so a direct src
+    // 401s at the ingress layer — fetch() carries the session properly.
+    fetch(rel(`api/notes/${note.id}/audio`))
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
+      .then(blob => {
+        if (this.playing !== note) return; // dismissed while downloading
+        if (this._blobUrl) URL.revokeObjectURL(this._blobUrl);
+        this._blobUrl = URL.createObjectURL(blob);
+        noteAudio.src = this._blobUrl;
+        noteAudio.play().catch(() => this.next());
+      })
+      .catch((e) => {
+        setPlayerMessage(`Could not play the note (${e.message}).`);
+        this.next();
+      });
   },
 
   stopAll() {
@@ -607,6 +623,7 @@ const notePlayer = {
     this.resumeAfter = false;
     noteAudio.pause();
     noteAudio.removeAttribute('src');
+    if (this._blobUrl) { URL.revokeObjectURL(this._blobUrl); this._blobUrl = null; }
   },
 };
 noteAudio.addEventListener('ended', () => notePlayer.next());
