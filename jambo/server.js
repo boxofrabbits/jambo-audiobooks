@@ -39,20 +39,57 @@ const INGRESS_TRUSTED_IP = process.env.INGRESS_TRUSTED_IP || '172.30.32.2';
 const db = new Db(path.join(DATA_DIR, 'db.json'));
 const secret = loadSecret(DATA_DIR);
 
+// Books can never silently vanish because books_dir changed: the add-on's
+// default share folder is ALWAYS scanned alongside the configured folder.
+const IS_ADDON = fs.existsSync(path.join(DATA_DIR, 'options.json'));
+const BOOKS_ROOTS = [...new Set([BOOKS_DIR, ...(IS_ADDON ? ['/share/jambo/books'] : [])])];
+
+// If the configured folder didn't exist at startup (e.g. an unmounted USB
+// drive), creating it and carrying on would strand uploads in a folder that
+// may not persist — surface that loudly instead.
+let storageWarning = null;
+if (!fs.existsSync(BOOKS_DIR)) {
+  storageWarning = `Books folder ${BOOKS_DIR} did not exist at startup — if this should be a USB drive, check that it is actually mounted before uploading.`;
+  console.warn(`[storage] ${storageWarning}`);
+}
+
+const SAMPLE_SLUG = 'jambo-demo-sample-book';
+
 let books = [];
 let bookById = new Map();
+let missingBooks = [];
 let scanning = null;
+
+function findMissingBooks() {
+  const present = new Set(books.map(b => b.id));
+  const ids = new Set();
+  for (const key of Object.keys(db.data.progress)) {
+    const bookId = key.slice(key.indexOf(':') + 1);
+    if (!present.has(bookId) && bookId !== SAMPLE_SLUG) ids.add(bookId);
+  }
+  return [...ids];
+}
 
 async function rescan() {
   if (!scanning) {
-    try { syncSampleBook(BOOKS_DIR); } catch (err) { console.warn('[sample]', err.message); }
-    scanning = scanLibrary(BOOKS_DIR, path.join(DATA_DIR, 'scan-cache.json'))
-      .then(result => {
-        books = result;
-        bookById = new Map(books.map(b => [b.id, b]));
-        console.log(`[scan] ${books.length} book(s) found in ${BOOKS_DIR}`);
-      })
-      .finally(() => { scanning = null; });
+    scanning = (async () => {
+      const cacheFile = path.join(DATA_DIR, 'scan-cache.json');
+      books = await scanLibrary(BOOKS_ROOTS, cacheFile);
+      missingBooks = findMissingBooks();
+      // The demo book only appears on a genuinely fresh library — never to
+      // paper over books that are missing because storage went away.
+      const hasReal = books.some(b => b.id !== SAMPLE_SLUG);
+      try {
+        for (const [i, root] of BOOKS_ROOTS.entries()) {
+          syncSampleBook(root, hasReal, i === 0 && missingBooks.length === 0);
+        }
+        if (!hasReal && missingBooks.length === 0 && books.length === 0) {
+          books = await scanLibrary(BOOKS_ROOTS, cacheFile);
+        }
+      } catch (err) { console.warn('[sample]', err.message); }
+      bookById = new Map(books.map(b => [b.id, b]));
+      console.log(`[scan] ${books.length} book(s) across ${BOOKS_ROOTS.join(', ')}${missingBooks.length ? ` — MISSING: ${missingBooks.join(', ')}` : ''}`);
+    })().finally(() => { scanning = null; });
   }
   return scanning;
 }
@@ -199,7 +236,11 @@ app.post('/api/logout', (req, res) => {
 // ---------- library ----------
 
 app.get('/api/books', requireAuth, (req, res) => {
-  res.json({ books: books.map(b => bookSummary(b, req.user.id)) });
+  res.json({
+    books: books.map(b => bookSummary(b, req.user.id)),
+    missingBooks,
+    storageWarning,
+  });
 });
 
 app.post('/api/rescan', requireAuth, async (req, res) => {

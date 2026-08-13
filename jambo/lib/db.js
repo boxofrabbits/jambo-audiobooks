@@ -9,14 +9,45 @@ export class Db {
     this.file = file;
     this.flushTimer = null;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    try {
-      this.data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch {
+
+    // Never silently discard an existing database. Try the main file, then
+    // the in-flight temp, then the backup; strip a UTF-8 BOM if present. If
+    // everything is unreadable, preserve the corrupt file before starting
+    // fresh so nothing is ever overwritten and lost.
+    this.data = null;
+    let loadedFrom = null;
+    for (const candidate of [file, file + '.tmp', file + '.bak']) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8').replace(/^﻿/, ''));
+        if (parsed && typeof parsed === 'object') {
+          this.data = parsed;
+          loadedFrom = candidate;
+          if (candidate !== file) console.warn(`[db] recovered database from ${path.basename(candidate)}`);
+          break;
+        }
+      } catch { /* try next candidate */ }
+    }
+    if (!this.data) {
+      if (fs.existsSync(file)) {
+        const quarantine = `${file}.corrupt-${Date.now()}`;
+        try {
+          fs.copyFileSync(file, quarantine);
+          console.error(`[db] DATABASE UNREADABLE — preserved as ${path.basename(quarantine)}, starting fresh`);
+        } catch { /* at least we tried */ }
+      }
       this.data = DEFAULT();
     }
     if (!this.data.users) this.data.users = [];
     if (!this.data.progress) this.data.progress = {};
     if (!this.data.notes) this.data.notes = [];
+
+    // Roll a backup of the last known-good state at every startup — but only
+    // from the main file, so a corrupt main never clobbers a good backup.
+    if (loadedFrom === file) {
+      try { fs.copyFileSync(file, file + '.bak'); } catch { /* best effort */ }
+    } else if (loadedFrom) {
+      this.flushSync(); // restore the recovered data to the main file
+    }
   }
 
   save() {

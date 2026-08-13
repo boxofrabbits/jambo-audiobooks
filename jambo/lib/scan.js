@@ -3,7 +3,11 @@
 // music-metadata and cached (keyed by path+size+mtime) so rescans are fast.
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { parseFile } from 'music-metadata';
+
+const execFileAsync = promisify(execFile);
 
 export const AUDIO_EXT = new Set(['.mp3', '.wav', '.m4a', '.m4b', '.aac', '.ogg', '.opus', '.flac']);
 export const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
@@ -46,19 +50,43 @@ function wavDuration(filePath) {
   }
 }
 
-export async function scanLibrary(booksDir, cacheFile) {
-  fs.mkdirSync(booksDir, { recursive: true });
+// Last-resort duration reader: ffprobe handles every container music-metadata
+// might choke on. Bundled in the add-on image; silently skipped if absent.
+async function ffprobeDuration(filePath) {
+  try {
+    const { stdout } = await execFileAsync('ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath],
+      { timeout: 30000 });
+    return parseFloat(stdout) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Scans one or more roots; the first root to claim a folder name wins.
+export async function scanLibrary(booksDirs, cacheFile) {
+  const roots = Array.isArray(booksDirs) ? booksDirs : [booksDirs];
+  fs.mkdirSync(roots[0], { recursive: true });
   const cache = loadCache(cacheFile);
   const newCache = {};
   const books = [];
 
-  const dirs = fs.readdirSync(booksDir, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => d.name)
-    .sort(naturalCompare);
+  const dirEntries = [];
+  const seenNames = new Set();
+  for (const root of roots) {
+    let names = [];
+    try {
+      names = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
+    } catch { continue; }
+    for (const name of names.sort(naturalCompare)) {
+      if (seenNames.has(name)) continue;
+      seenNames.add(name);
+      dirEntries.push({ root, dirName: name });
+    }
+  }
 
-  for (const dirName of dirs) {
-    const dirPath = path.join(booksDir, dirName);
+  for (const { root, dirName } of dirEntries) {
+    const dirPath = path.join(root, dirName);
     const entries = fs.readdirSync(dirPath).sort(naturalCompare);
     const audioFiles = entries.filter(f => AUDIO_EXT.has(path.extname(f).toLowerCase()));
     if (audioFiles.length === 0) continue;
@@ -99,7 +127,11 @@ export async function scanLibrary(booksDir, cacheFile) {
             console.warn(`[scan] RIFF fallback failed for ${filePath}: ${err.message}`);
           }
         }
-        if (!(meta.duration > 0)) console.warn(`[scan] no duration for ${filePath} — timeline will be degraded`);
+        if (!(meta.duration > 0)) {
+          meta.duration = await ffprobeDuration(filePath);
+          if (meta.duration > 0) console.log(`[scan] used ffprobe duration for ${file}`);
+        }
+        if (!(meta.duration > 0)) console.warn(`[scan] NO DURATION for ${filePath} — timeline degraded for this book`);
       }
       // Failed reads are not cached, so a transient failure heals on rescan.
       if (meta.duration > 0) newCache[key] = meta;

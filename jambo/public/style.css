@@ -198,6 +198,17 @@ input:focus { border-color: var(--accent); }
 .mini-bar-row .pct { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
 .mini-bar-row .who { min-width: 14px; }
 
+.warn-banner {
+  background: #3a2418;
+  border: 1px solid #7a4a2a;
+  color: #f0c9a8;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+
 .empty-lib { color: var(--text-dim); text-align: center; margin-top: 15vh; padding: 0 10px; }
 .empty-lib code { background: var(--bg-raise); padding: 2px 8px; border-radius: 6px; font-size: 14px; }
 

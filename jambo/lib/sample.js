@@ -84,12 +84,12 @@ function png(size, pixelFn) {
 
 // ---------- public API ----------
 
-export function syncSampleBook(booksDir) {
+export function syncSampleBook(booksDir, hasRealBooksElsewhere = false, allowGenerate = true) {
   fs.mkdirSync(booksDir, { recursive: true });
   const dirs = fs.readdirSync(booksDir, { withFileTypes: true }).filter(d => d.isDirectory());
   const samplePath = path.join(booksDir, SAMPLE_DIR);
   const markerPath = path.join(samplePath, MARKER);
-  const hasRealBooks = dirs.some(d => d.name !== SAMPLE_DIR);
+  const hasRealBooks = hasRealBooksElsewhere || dirs.some(d => d.name !== SAMPLE_DIR);
 
   if (hasRealBooks) {
     // Real library exists — retire the demo (only if it's really ours).
@@ -100,7 +100,7 @@ export function syncSampleBook(booksDir) {
     return;
   }
 
-  if (fs.existsSync(markerPath)) return; // already there
+  if (!allowGenerate || fs.existsSync(markerPath)) return;
 
   fs.mkdirSync(samplePath, { recursive: true });
   const scaleA = [0, 3, 5, 7, 10, 12, 10, 7, 5, 3, 0, -2, 0, 3, 7, 12];

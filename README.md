@@ -92,6 +92,16 @@ the drive under `/media`, the community "Samba NAS" add-on can mount USB
 partitions, or just copy the files onto `/share/jambo/books` once. Keep each
 book in its own folder either way.
 
+Storage safety nets: the default `/share/jambo/books` folder is *always*
+scanned in addition to `books_dir`, so changing the option never makes
+previously-uploaded books disappear. If the app has saved listening positions
+for a book whose files can't be found (unmounted drive, moved folder), the
+library shows a warning banner naming it instead of quietly acting like it
+never existed — positions are kept and reattach when the files come back. If
+`books_dir` doesn't exist at startup (e.g. the USB drive isn't mounted), a
+warning banner says so. The progress database keeps a rolling backup and
+recovers itself automatically if a power cut corrupts a write.
+
 Progress data lives in the add-on's `/data` (backed up by HA snapshots).
 
 **Heads-up on locked-screen listening:** audio playing inside the HA app's

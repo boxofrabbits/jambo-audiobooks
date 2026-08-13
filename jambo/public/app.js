@@ -709,16 +709,28 @@ async function renderLibrary() {
   const spinner = screen.querySelector('.spinner');
   if (!spinner) return;
 
+  const banners = [];
+  if (data.storageWarning) {
+    banners.push(el('div', { class: 'warn-banner' },
+      '⚠️ ', data.storageWarning));
+  }
+  if (data.missingBooks?.length) {
+    banners.push(el('div', { class: 'warn-banner' },
+      `⚠️ ${data.missingBooks.length} book${data.missingBooks.length > 1 ? 's' : ''} with saved progress ${data.missingBooks.length > 1 ? 'are' : 'is'} missing from storage (${data.missingBooks.join(', ')}). ` +
+      'Your listening positions are safe — check the USB drive / books folder and tap rescan.'));
+  }
+
   if (data.books.length === 0) {
-    spinner.replaceWith(el('div', { class: 'empty-lib' },
+    spinner.replaceWith(el('div', {}, ...banners, el('div', { class: 'empty-lib' },
       el('p', { style: { fontSize: '40px', marginBottom: '10px' } }, '📚'),
       el('p', {}, 'No books yet.'),
       el('p', { style: { marginTop: '10px', fontSize: '14px' } },
         'Drop each audiobook into its own folder inside ', el('code', {}, 'books/'),
         ' (with a cover.jpg if you have one), then tap rescan.'),
-    ));
+    )));
   } else {
-    spinner.replaceWith(el('div', { class: 'book-grid' }, data.books.map(bookCard)));
+    spinner.replaceWith(el('div', {}, ...banners,
+      el('div', { class: 'book-grid' }, data.books.map(bookCard))));
   }
 
   if (player.book) screen.append(miniPlayerEl());
@@ -748,11 +760,15 @@ function bookCard(book) {
 
   const barRow = (who, color, progress) => {
     const pct = book.duration > 0 && progress ? clamp(progress.position / book.duration, 0, 1) : 0;
+    // Unknown total length: show elapsed time rather than a misleading 0%.
+    const label = progress?.finished ? '✓'
+      : book.duration > 0 ? `${Math.round(pct * 100)}%`
+      : progress?.position > 0 ? fmtLong(progress.position) : '—';
     return el('div', { class: 'mini-bar-row' },
       el('span', { class: 'who', style: { color } }, who),
       el('div', { class: 'mini-bar' },
         el('div', { style: { width: `${pct * 100}%`, background: color } })),
-      el('span', { class: 'pct' }, progress?.finished ? '✓' : `${Math.round(pct * 100)}%`));
+      el('span', { class: 'pct' }, label));
   };
 
   return el('button', { class: 'book-card', onclick: () => navigate(`#/book/${encodeURIComponent(book.id)}`) },
@@ -983,7 +999,8 @@ async function renderPlayer(bookId) {
     return clamp((e.clientX - rect.left) / rect.width, 0, 1) * book.duration;
   };
   timeline.addEventListener('pointerdown', (e) => {
-    timeline.setPointerCapture(e.pointerId);
+    if (!(book.duration > 0)) return; // no known length → a tap would seek to 0
+    try { timeline.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
     scrubPos = posFromEvent(e);
     updatePlayerUI();
   });
@@ -1180,10 +1197,14 @@ function updatePlayerUI() {
         class: isLive(pp) ? 'live-pulse' : '',
         style: { width: '8px', height: '8px', borderRadius: '50%', background: who.color },
       });
-      if (pp && book.duration > 0) {
-        const ppct = clamp(pp.position / book.duration, 0, 1) * 100;
-        ui.partnerMarker.style.display = '';
-        ui.partnerMarker.style.left = `${ppct}%`;
+      if (pp) {
+        if (book.duration > 0) {
+          const ppct = clamp(pp.position / book.duration, 0, 1) * 100;
+          ui.partnerMarker.style.display = '';
+          ui.partnerMarker.style.left = `${ppct}%`;
+        } else {
+          ui.partnerMarker.style.display = 'none';
+        }
         const delta = pos - pp.position;
         if (pp.finished) {
           ui.deltaNum.textContent = '📕';
