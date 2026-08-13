@@ -809,7 +809,7 @@ function renderUpload() {
 
   const author = el('input', { placeholder: 'e.g. Ursula K. Le Guin (optional)' });
   const title = el('input', { placeholder: 'e.g. A Wizard of Earthsea' });
-  const fileInput = el('input', { type: 'file', multiple: '', accept: 'audio/*,image/*,.m4b,.opus' });
+  const fileInput = el('input', { type: 'file', multiple: '', accept: 'audio/*,image/*,.m4b,.opus,.cue' });
   const fileList = el('div', { class: 'upload-list' });
   const status = el('p', { class: 'error-msg', style: { textAlign: 'center' } });
   const progressFill = el('div', { style: { width: '0%', background: 'var(--accent)' } });
@@ -927,7 +927,7 @@ function renderUpload() {
       el('div', { class: 'field' }, el('label', {}, 'Author'), author),
       el('div', { class: 'field' }, el('label', {}, 'Title'), title),
       el('div', { class: 'field' },
-        el('label', {}, 'Files — the audio parts, plus a cover image if you have one. Tap again to add more.'),
+        el('label', {}, 'Files — the audio parts, plus a cover image and .cue chapter sheet if you have them. Tap again to add more.'),
         fileInput),
       fileList,
       progressBar,

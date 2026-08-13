@@ -476,7 +476,7 @@ app.post('/api/upload', requireAuth, (req, res) => {
   const filename = safeEntryName(req.query.filename);
   if (!book || !filename) return res.status(400).json({ error: 'bad_name' });
   const ext = path.extname(filename).toLowerCase();
-  if (!AUDIO_EXT.has(ext) && !IMAGE_EXT.has(ext)) return res.status(400).json({ error: 'unsupported_type' });
+  if (!AUDIO_EXT.has(ext) && !IMAGE_EXT.has(ext) && ext !== '.cue') return res.status(400).json({ error: 'unsupported_type' });
 
   const dir = path.join(BOOKS_DIR, book);
   fs.mkdirSync(dir, { recursive: true });
