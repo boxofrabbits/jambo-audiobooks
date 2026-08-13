@@ -521,12 +521,37 @@ noteAudio.addEventListener('error', () => notePlayer.next());
 let partnerPollTimer = null;
 let libraryPollTimer = null;
 
-function navigate(hash) {
-  if (location.hash === hash) render();
+// Hierarchical navigation: going deeper (home → library → book) pushes one
+// history entry per level; in-app back arrows pop it. The phone's back button
+// therefore walks UP the screens and then exits to Home Assistant, instead of
+// replaying every screen ever visited. Sideways moves (e.g. upload → library
+// after a finished upload) replace the current entry.
+let navDepth = 0;
+let expectedNav = null; // { hash, push }
+
+function navigate(hash, replace = false) {
+  if (location.hash === hash) { render(); return; }
+  expectedNav = { hash, push: !replace };
+  if (replace) location.replace(hash || '#');
   else location.hash = hash;
 }
 
-window.addEventListener('hashchange', render);
+// Up one level: pop real history if we pushed it; otherwise (deep link,
+// fresh load) swap in the fallback screen without growing history.
+function navigateUp(fallback = '') {
+  if (navDepth > 0) history.back();
+  else navigate(fallback, true);
+}
+
+window.addEventListener('hashchange', () => {
+  if (expectedNav && location.hash === expectedNav.hash) {
+    if (expectedNav.push) navDepth++;
+  } else {
+    navDepth = Math.max(0, navDepth - 1); // browser/phone back (or forward)
+  }
+  expectedNav = null;
+  render();
+});
 
 async function boot() {
   try {
@@ -647,7 +672,7 @@ function renderPinPad(user) {
     try {
       const res = await api('/api/login', { method: 'POST', body: { userId: user.id, pin } });
       state.me = res.me;
-      navigate('#/library');
+      navigate('');
     } catch (e) {
       pin = '';
       redraw();
@@ -686,7 +711,7 @@ function renderPinPad(user) {
 function libHeader(onRefresh, backTo) {
   const header = el('div', { class: 'lib-header' },
     backTo != null
-      ? el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate(backTo) })
+      ? el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigateUp(backTo) })
       : el('div', { class: 'logo' }, 'Jambo', el('span', { class: 'dot' }, '.')),
     el('div', { class: 'header-actions' },
       el('button', { class: 'icon-btn', title: 'Add a book', html: ICONS.upload,
@@ -1080,7 +1105,7 @@ function renderUpload() {
       progressText.textContent = '100% — done';
       submitBtn.textContent = 'Scanning…';
       await api('/api/rescan', { method: 'POST' });
-      navigate('#/library');
+      navigate('#/library', true);
     } catch (e) {
       status.textContent = `Upload failed: ${e.message}`;
       submitBtn.disabled = false;
@@ -1091,7 +1116,7 @@ function renderUpload() {
 
   $app.replaceChildren(el('div', { class: 'screen fade-in' },
     el('div', { class: 'player-top' },
-      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate('#/library') }),
+      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigateUp('') }),
       state.me ? avatarEl(state.me, true) : null),
     el('div', { class: 'setup-card', style: { marginTop: '8px' } },
       el('h3', {}, 'Add a book'),
@@ -1146,7 +1171,7 @@ async function renderPlayer(bookId) {
   try {
     book = await api(`/api/books/${encodeURIComponent(bookId)}`);
   } catch {
-    navigate('');
+    navigate('', true);
     return;
   }
 
@@ -1329,7 +1354,7 @@ async function renderPlayer(bookId) {
 
   $app.replaceChildren(el('div', { class: 'screen player fade-in' },
     el('div', { class: 'player-top' },
-      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate('') }),
+      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigateUp('') }),
       state.me ? avatarEl(state.me, true) : null),
     el('div', { class: 'player-cover-wrap' }, coverEl(book, 'player-cover')),
     el('div', { class: 'player-meta' },

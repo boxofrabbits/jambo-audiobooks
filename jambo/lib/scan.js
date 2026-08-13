@@ -63,6 +63,22 @@ async function ffprobeDuration(filePath) {
   }
 }
 
+// Chapter markers embedded in the file itself (standard in m4b audiobooks,
+// occasionally ID3 CHAP in mp3s). Start times are file-relative seconds.
+async function ffprobeChapters(filePath) {
+  try {
+    const { stdout } = await execFileAsync('ffprobe',
+      ['-v', 'error', '-print_format', 'json', '-show_chapters', filePath],
+      { timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+    return (JSON.parse(stdout).chapters || []).map((c, i) => ({
+      start: parseFloat(c.start_time) || 0,
+      title: c.tags?.title?.trim() || `Chapter ${i + 1}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // Cue sheets give named chapter points inside big single-file rips.
 // Timestamps are mm:ss:ff (75 frames per second); mm may exceed 99.
 function parseCueChapters(cuePath, tracks) {
@@ -158,8 +174,10 @@ export async function scanLibrary(booksDirs, cacheFile) {
       const stat = fs.statSync(filePath);
       const key = `${filePath}|${stat.size}|${stat.mtimeMs}`;
       let meta = cache[key];
-      if (!meta || !(meta.duration > 0)) {
-        meta = { duration: 0, title: '', artist: '', album: '' };
+      // chapters === undefined marks a cache entry from before chapter
+      // support — re-probe those once so existing libraries pick them up.
+      if (!meta || !(meta.duration > 0) || meta.chapters === undefined) {
+        meta = { duration: 0, title: '', artist: '', album: '', chapters: [] };
         try {
           const parsed = await parseFile(filePath, { duration: true });
           meta.duration = parsed.format.duration || 0;
@@ -182,6 +200,7 @@ export async function scanLibrary(booksDirs, cacheFile) {
           if (meta.duration > 0) console.log(`[scan] used ffprobe duration for ${file}`);
         }
         if (!(meta.duration > 0)) console.warn(`[scan] NO DURATION for ${filePath} — timeline degraded for this book`);
+        meta.chapters = await ffprobeChapters(filePath);
       }
       // Failed reads are not cached, so a transient failure heals on rescan.
       if (meta.duration > 0) newCache[key] = meta;
@@ -212,6 +231,16 @@ export async function scanLibrary(booksDirs, cacheFile) {
       }
     }
     chapters = chapters.filter(c => c.start < offset + 1).sort((a, b) => a.start - b.start);
+    // No cue: use chapter markers embedded in the audio files (m4b, ID3 CHAP).
+    if (chapters.length === 0) {
+      for (const [i, t] of tracks.entries()) {
+        for (const ch of metas[i].chapters || []) {
+          chapters.push({ title: ch.title, start: t.start + ch.start });
+        }
+      }
+      chapters = chapters.filter(c => c.start < offset + 1).sort((a, b) => a.start - b.start);
+      if (chapters.length) console.log(`[scan] ${dirName}: ${chapters.length} embedded chapter(s)`);
+    }
     if (chapters.length === 0) chapters = tracks.map(t => ({ title: t.title, start: t.start }));
     chapters.forEach((c, i) => {
       c.duration = (i + 1 < chapters.length ? chapters[i + 1].start : offset) - c.start;
