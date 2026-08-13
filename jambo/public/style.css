@@ -14,6 +14,9 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* The root element's background shows in iOS's safe-area strip and
+   overscroll bounce — leave it unset and iPhones show white there. */
+html { background: var(--bg); }
 html, body { height: 100%; }
 
 body {
