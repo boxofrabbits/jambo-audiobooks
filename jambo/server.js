@@ -141,7 +141,10 @@ const PALETTE = ['#e0918b', '#8bb8e0', '#9fd0a5', '#e0c98b', '#c39be0', '#e08bc3
 app.use((req, res, next) => {
   const uid = req.headers['x-remote-user-id'];
   const from = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
-  if (uid && from === INGRESS_TRUSTED_IP) {
+  // The supervisor's ingress proxy normally lives at 172.30.32.2, but accept
+  // the whole hassio network so a shifted proxy IP can't break auto-login.
+  const trusted = from === INGRESS_TRUSTED_IP || from.startsWith('172.30.32.');
+  if (uid && trusted) {
     req.haUser = {
       id: String(uid),
       displayName: String(req.headers['x-remote-user-display-name'] || req.headers['x-remote-user-name'] || '').trim(),

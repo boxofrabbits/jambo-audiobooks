@@ -74,6 +74,9 @@ const BASE = (() => {
   return last.includes('.') ? p.slice(0, p.length - last.length) : p + '/';
 })();
 const rel = (path) => BASE + String(path).replace(/^\/+/, '');
+// Behind HA ingress, sessions expire (~15 min) when the phone screen is off
+// and background pings get throttled — mid-file range requests then fail.
+const IS_INGRESS = location.pathname.includes('/api/hassio_ingress/');
 
 async function api(path, opts = {}) {
   const res = await fetch(rel(path), {
@@ -139,7 +142,39 @@ const player = {
   notes: [],           // voice notes for the loaded book
   _prevTick: null,
   _preloaded: null,    // URL of the next track being warmed in the cache
+  _bufferedFor: null,  // media URL currently being pulled into memory (ingress)
   intendedPlaying: false, // true between user-play and user-pause (OS pauses don't clear it)
+
+  // Under ingress, buffer the whole current file into memory once playback
+  // starts: after that, session expiry and dropped connections can't stop
+  // mid-file playback. Oversized files stay streamed to spare phone memory.
+  async bufferCurrentTrack() {
+    if (!IS_INGRESS || !this.book || this.blobUrl) return;
+    const idx = this.trackIdx;
+    const url = rel(`media/${this.book.id}/${idx}`);
+    if (this._bufferedFor === url) return;
+    this._bufferedFor = url;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const len = Number(res.headers.get('content-length') || 0);
+      if (len > 250 * 1024 * 1024) { try { res.body?.cancel(); } catch { /* ignore */ } return; }
+      const blob = await res.blob();
+      if (this.trackIdx !== idx || !this.book || this.blobUrl) return; // moved on meanwhile
+      const pos = audio.currentTime;
+      const resume = this.intendedPlaying || !audio.paused;
+      this.blobUrl = URL.createObjectURL(blob);
+      audio.src = this.blobUrl;
+      const onMeta = () => {
+        audio.currentTime = pos;
+        if (resume) audio.play().catch(() => {});
+      };
+      audio.addEventListener('loadedmetadata', onMeta, { once: true });
+      audio.load();
+    } catch {
+      this._bufferedFor = null; // retry on the next play event
+    }
+  },
 
   get playing() { return this.book && !audio.paused && !audio.ended; },
 
@@ -277,6 +312,7 @@ const player = {
     this.notes = [];
     this._prevTick = null;
     this._preloaded = null;
+    this._bufferedFor = null;
     this.intendedPlaying = false;
     this.sleepDeadline = null;
     this.sleepChoice = 0;
@@ -425,7 +461,19 @@ audio.addEventListener('error', () => {
   const codes = { 1: 'aborted', 2: 'network error', 3: 'decode error', 4: 'source not supported' };
   player.onMediaError(codes[audio.error?.code] || 'media error');
 });
-audio.addEventListener('play', () => { player._played = true; setMediaPlaybackState('playing'); updatePlayerUI(); });
+audio.addEventListener('play', () => {
+  player._played = true;
+  setMediaPlaybackState('playing');
+  player.bufferCurrentTrack();
+  updatePlayerUI();
+});
+
+// Belt-and-braces for ingress: audio-playing pages are exempt from Chrome's
+// intensive timer throttling, so this ping keeps traffic flowing through the
+// session while listening with the screen off.
+setInterval(() => {
+  if (IS_INGRESS && player.playing) fetch(rel('api/state')).catch(() => {});
+}, 4 * 60e3);
 audio.addEventListener('pause', () => { setMediaPlaybackState('paused'); player.saveProgress(true); updatePlayerUI(); });
 
 // Warms the HTTP cache for upcoming chapter files; never actually played.
