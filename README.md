@@ -152,6 +152,16 @@ silently in place and clearing itself a couple of minutes after they stop.
 Set `listening_notifications: false` in the add-on configuration to turn
 that off.
 
+## Home screen
+
+The home screen leads with **On Deck** — a Netflix-style row of whatever you
+two listened to most recently ("Kyla listened 1h 20m · 3d ago"), newest on
+the left, tap to jump back in, ✕ to dismiss an entry (it returns if someone
+listens again). Below it, **Library** opens the full collection. Books can be
+organised into folders: give a book a Folder name when uploading, or over
+Samba nest book folders one level deep (`books/Fantasy/Author - Title/…`) —
+each folder becomes a section in the library.
+
 ## Voice notes
 
 In the player, **hold the 🎙 button** and speak — releasing saves a voice note

@@ -54,6 +54,15 @@ function fmtLong(sec) {
   return `${sec}s`;
 }
 
+function fmtAgo(ts) {
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  if (s < 86400 * 30) return `${Math.round(s / 86400)}d ago`;
+  return `${Math.round(s / (86400 * 30))}mo ago`;
+}
+
 // All URLs must resolve relative to where the app is mounted, so it works both
 // standalone ("/") and behind Home Assistant ingress
 // ("/api/hassio_ingress/<token>/"). Leading slashes are stripped: "/api/x"
@@ -543,7 +552,8 @@ function render() {
   const m = location.hash.match(/^#\/book\/(.+)$/);
   if (m) return renderPlayer(decodeURIComponent(m[1]));
   if (location.hash === '#/upload') return renderUpload();
-  renderLibrary();
+  if (location.hash === '#/library') return renderLibrary();
+  renderHome();
 }
 
 // ---------- setup screen ----------
@@ -673,31 +683,103 @@ function renderPinPad(user) {
 
 // ---------- library ----------
 
-async function renderLibrary() {
+function libHeader(onRefresh, backTo) {
+  const header = el('div', { class: 'lib-header' },
+    backTo != null
+      ? el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate(backTo) })
+      : el('div', { class: 'logo' }, 'Jambo', el('span', { class: 'dot' }, '.')),
+    el('div', { class: 'header-actions' },
+      el('button', { class: 'icon-btn', title: 'Add a book', html: ICONS.upload,
+        onclick: () => navigate('#/upload') }),
+      el('button', { class: 'icon-btn', title: 'Rescan library', html: ICONS.refresh,
+        onclick: async (e) => {
+          e.currentTarget.style.opacity = '0.4';
+          await api('/api/rescan', { method: 'POST' }).catch(() => {});
+          onRefresh();
+        } }),
+      state.haUser ? null : el('button', { class: 'icon-btn', title: 'Log out', html: ICONS.logout,
+        onclick: async () => {
+          player.stop();
+          await api('/api/logout', { method: 'POST' }).catch(() => {});
+          state.me = null;
+          navigate('');
+        } }),
+      state.me ? avatarEl(state.me, true) : null,
+    ));
+  return header;
+}
+
+// ---------- home: On Deck + link to the library ----------
+
+async function renderHome() {
+  clearInterval(libraryPollTimer);
   const screen = el('div', { class: 'screen fade-in' + (player.book ? ' has-mini' : '') },
-    el('div', { class: 'lib-header' },
-      el('div', { class: 'logo' }, 'Jambo', el('span', { class: 'dot' }, '.')),
-      el('div', { class: 'header-actions' },
-        el('button', { class: 'icon-btn', title: 'Add a book', html: ICONS.upload,
-          onclick: () => navigate('#/upload') }),
-        el('button', { class: 'icon-btn', title: 'Rescan library', html: ICONS.refresh,
-          onclick: async (e) => {
-            e.currentTarget.style.opacity = '0.4';
-            await api('/api/rescan', { method: 'POST' }).catch(() => {});
-            renderLibrary();
-          } }),
-        state.haUser ? null : el('button', { class: 'icon-btn', title: 'Log out', html: ICONS.logout,
-          onclick: async () => {
-            player.stop();
-            await api('/api/logout', { method: 'POST' }).catch(() => {});
-            state.me = null;
-            navigate('');
-          } }),
-        state.me ? avatarEl(state.me, false) : null,
-      )),
+    libHeader(renderHome),
     el('div', { class: 'spinner' }),
   );
-  screen.querySelector('.header-actions .avatar')?.classList.add('small');
+  $app.replaceChildren(screen);
+
+  let data;
+  try {
+    data = await api('/api/books');
+  } catch { return; }
+  state.booksCache = data.books;
+  const byId = new Map(data.books.map(b => [b.id, b]));
+
+  const deckCard = (entry) => {
+    const book = byId.get(entry.bookId);
+    if (!book) return null;
+    const who = entry.user.id === state.me?.id ? 'You' : entry.user.name;
+    const line = entry.finished ? `${who} finished it`
+      : entry.session?.seconds >= 30 ? `${who} listened ${fmtLong(entry.session.seconds)}`
+      : `${who} at ${fmtLong(entry.position)}`;
+    const card = el('div', { class: 'deck-card' },
+      coverEl(book, 'cover'),
+      el('div', { class: 'book-title' }, book.title),
+      el('div', { class: 'deck-line', style: { color: entry.user.color } }, line),
+      el('div', { class: 'deck-ago' }, fmtAgo(entry.updatedAt)));
+    card.addEventListener('click', () => navigate(`#/book/${encodeURIComponent(book.id)}`));
+    card.append(el('button', { class: 'deck-x', title: 'Remove from On Deck', onclick: async (e) => {
+      e.stopPropagation();
+      await api('/api/ondeck/hide', { method: 'POST', body: { bookId: book.id } }).catch(() => {});
+      renderHome();
+    } }, '✕'));
+    return card;
+  };
+
+  const banners = [];
+  if (data.storageWarning) banners.push(el('div', { class: 'warn-banner' }, '⚠️ ', data.storageWarning));
+  if (data.missingBooks?.length) {
+    banners.push(el('div', { class: 'warn-banner' },
+      `⚠️ ${data.missingBooks.length} book${data.missingBooks.length > 1 ? 's are' : ' is'} missing from storage (${data.missingBooks.join(', ')}). Positions are safe — check the books folder and rescan.`));
+  }
+
+  const deck = data.onDeck?.map(deckCard).filter(Boolean) || [];
+  screen.querySelector('.spinner').replaceWith(el('div', {},
+    ...banners,
+    deck.length ? el('h2', { class: 'folder-header serif' }, 'On Deck') : null,
+    deck.length ? el('div', { class: 'deck-row' }, deck) : null,
+    el('button', { class: 'library-link', onclick: () => navigate('#/library') },
+      el('span', { class: 'serif', style: { fontSize: '19px' } }, '📚 Library'),
+      el('span', { class: 'library-count' }, `${data.books.length} book${data.books.length === 1 ? '' : 's'} ›`)),
+    deck.length === 0 ? el('p', { class: 'tagline', style: { textAlign: 'center', marginTop: '18px', fontSize: '13.5px' } },
+      'Books you two listen to will appear here.') : null,
+  ));
+
+  if (player.book) screen.append(miniPlayerEl());
+
+  libraryPollTimer = setInterval(async () => {
+    if (location.hash === '' || location.hash === '#/' || location.hash === '#') {
+      renderHome();
+    }
+  }, 60000);
+}
+
+async function renderLibrary() {
+  const screen = el('div', { class: 'screen fade-in' + (player.book ? ' has-mini' : '') },
+    libHeader(renderLibrary, ''),
+    el('div', { class: 'spinner' }),
+  );
   $app.replaceChildren(screen);
 
   let data;
@@ -730,7 +812,7 @@ async function renderLibrary() {
     )));
   } else {
     spinner.replaceWith(el('div', {}, ...banners,
-      el('div', { class: 'book-grid' }, data.books.map(bookCard))));
+      el('div', { class: 'lib-sections' }, ...librarySections(data.books))));
   }
 
   if (player.book) screen.append(miniPlayerEl());
@@ -744,9 +826,23 @@ async function renderLibraryQuietly(screen) {
   try {
     const data = await api('/api/books');
     state.booksCache = data.books;
-    const grid = screen.querySelector('.book-grid');
-    if (grid) grid.replaceChildren(...data.books.map(bookCard));
+    const container = screen.querySelector('.lib-sections');
+    if (container) container.replaceChildren(...librarySections(data.books));
   } catch { /* ignore */ }
+}
+
+// Books grouped by their collection folder; ungrouped books first.
+function librarySections(books) {
+  const groups = new Map();
+  for (const b of books) {
+    const key = b.folder || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(b);
+  }
+  const keys = [...groups.keys()].sort((a, b) => (b === '') - (a === '') || a.localeCompare(b));
+  return keys.map(key => el('div', {},
+    key ? el('h2', { class: 'folder-header serif' }, '📁 ', key) : null,
+    el('div', { class: 'book-grid' }, groups.get(key).map(bookCard))));
 }
 
 function bookCard(book) {
@@ -809,6 +905,10 @@ function renderUpload() {
 
   const author = el('input', { placeholder: 'e.g. Ursula K. Le Guin (optional)' });
   const title = el('input', { placeholder: 'e.g. A Wizard of Earthsea' });
+  const existingFolders = [...new Set((state.booksCache || []).map(b => b.folder).filter(Boolean))].sort();
+  const folderField = el('input', { placeholder: 'e.g. Fantasy (optional)', list: 'jambo-folders' });
+  const folderDatalist = el('datalist', { id: 'jambo-folders' },
+    existingFolders.map(f => el('option', { value: f })));
   const fileInput = el('input', { type: 'file', multiple: '', accept: 'audio/*,image/*,.m4b,.opus,.cue' });
   const fileList = el('div', { class: 'upload-list' });
   const status = el('p', { class: 'error-msg', style: { textAlign: 'center' } });
@@ -859,13 +959,14 @@ function renderUpload() {
     xhr.send(blob);
   });
 
-  const uploadOne = async (file, folder, onProgress) => {
+  const uploadOne = async (file, folder, collection, onProgress) => {
     let offset = 0;
     let retries = 0;
     while (offset < file.size || file.size === 0) {
       const chunk = file.slice(offset, offset + CHUNK_BYTES);
       const isLast = offset + chunk.size >= file.size;
       const url = rel(`api/upload?book=${encodeURIComponent(folder)}&filename=${encodeURIComponent(file.name)}`
+        + (collection ? `&folder=${encodeURIComponent(collection)}` : '')
         + `&offset=${offset}&last=${isLast ? 1 : 0}`);
       try {
         const r = await sendChunk(url, chunk, (frac) => onProgress((offset + frac * chunk.size) / (file.size || 1)));
@@ -888,7 +989,8 @@ function renderUpload() {
     const t = title.value.trim();
     if (!t) { status.textContent = 'Give the book a title.'; return; }
     if (files.length === 0) { status.textContent = 'Pick the audio files (and a cover if you have one).'; return; }
-    const folder = (author.value.trim() ? `${author.value.trim()} - ${t}` : t).replace(/[/\\<>:"|?*]/g, '');
+    const bookDir = (author.value.trim() ? `${author.value.trim()} - ${t}` : t).replace(/[/\\<>:"|?*]/g, '');
+    const collection = folderField.value.trim().replace(/[/\\<>:"|?*.]/g, '');
 
     uploading = true;
     submitBtn.disabled = true;
@@ -899,7 +1001,7 @@ function renderUpload() {
       for (const [i, file] of files.entries()) {
         status.textContent = '';
         submitBtn.textContent = `Uploading ${file.name}…`;
-        await uploadOne(file, folder, (frac) => {
+        await uploadOne(file, bookDir, collection, (frac) => {
           const pct = ((doneBytes + frac * file.size) / totalBytes) * 100;
           progressFill.style.width = `${pct}%`;
           progressText.textContent = `${Math.round(pct)}% — file ${i + 1} of ${files.length}`;
@@ -926,6 +1028,7 @@ function renderUpload() {
       el('h3', {}, 'Add a book'),
       el('div', { class: 'field' }, el('label', {}, 'Author'), author),
       el('div', { class: 'field' }, el('label', {}, 'Title'), title),
+      el('div', { class: 'field' }, el('label', {}, 'Folder — group books into a section on the home screen'), folderField, folderDatalist),
       el('div', { class: 'field' },
         el('label', {}, 'Files — the audio parts, plus a cover image and .cue chapter sheet if you have them. Tap again to add more.'),
         fileInput),
@@ -948,7 +1051,7 @@ async function renderPlayer(bookId) {
   try {
     book = await api(`/api/books/${encodeURIComponent(bookId)}`);
   } catch {
-    navigate('#/library');
+    navigate('');
     return;
   }
 
@@ -1114,7 +1217,7 @@ async function renderPlayer(bookId) {
 
   $app.replaceChildren(el('div', { class: 'screen player fade-in' },
     el('div', { class: 'player-top' },
-      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate('#/library') }),
+      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigate('') }),
       state.me ? avatarEl(state.me, true) : null),
     el('div', { class: 'player-cover-wrap' }, coverEl(book, 'player-cover')),
     el('div', { class: 'player-meta' },

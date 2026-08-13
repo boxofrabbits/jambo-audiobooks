@@ -156,6 +156,7 @@ function bookSummary(book, meId) {
     id: book.id,
     title: book.title,
     author: book.author,
+    folder: book.folder || null,
     duration: book.duration,
     trackCount: book.tracks.length,
     hasCover: !!book.coverPath,
@@ -243,12 +244,49 @@ app.post('/api/logout', (req, res) => {
 
 // ---------- library ----------
 
+// Most recent listening activity by either person, newest first, minus
+// entries the viewer has dismissed (a dismissal is undone by new listening).
+function onDeckFor(viewerId) {
+  const latest = new Map(); // bookId -> {user, progress}
+  for (const [key, prog] of Object.entries(db.data.progress)) {
+    const sep = key.indexOf(':');
+    const userId = key.slice(0, sep);
+    const bookId = key.slice(sep + 1);
+    if (!bookById.has(bookId)) continue;
+    if (!(prog.updatedAt > 0)) continue;
+    const cur = latest.get(bookId);
+    if (!cur || prog.updatedAt > cur.progress.updatedAt) {
+      latest.set(bookId, { user: db.getUser(userId), progress: prog });
+    }
+  }
+  return [...latest.entries()]
+    .filter(([bookId, e]) => e.user && e.progress.updatedAt > db.deckHiddenAt(viewerId, bookId))
+    .sort((a, b) => b[1].progress.updatedAt - a[1].progress.updatedAt)
+    .slice(0, 12)
+    .map(([bookId, e]) => ({
+      bookId,
+      user: publicUser(e.user),
+      position: e.progress.position,
+      finished: e.progress.finished,
+      updatedAt: e.progress.updatedAt,
+      session: e.progress.session || null,
+    }));
+}
+
 app.get('/api/books', requireAuth, (req, res) => {
   res.json({
     books: books.map(b => bookSummary(b, req.user.id)),
+    onDeck: onDeckFor(req.user.id),
     missingBooks,
     storageWarning,
   });
+});
+
+app.post('/api/ondeck/hide', requireAuth, (req, res) => {
+  const bookId = String(req.body?.bookId || '');
+  if (!bookById.has(bookId)) return res.status(404).json({ error: 'unknown_book' });
+  db.hideFromDeck(req.user.id, bookId);
+  res.json({ ok: true });
 });
 
 app.post('/api/rescan', requireAuth, async (req, res) => {
@@ -436,15 +474,16 @@ const saveProgress = (req, res) => {
   const finished = req.body?.finished === true || (book.duration > 0 && pos >= book.duration - 5);
 
   const prevPos = db.getProgress(req.user.id, book.id)?.position ?? 0;
-  db.setProgress(req.user.id, book.id, pos, finished);
+  const step = pos - prevPos;
+  const natural = step > 0 && step < 60 ? step : 0;
+  db.setProgress(req.user.id, book.id, pos, finished, natural);
   res.json({ ok: true });
 
   // Overtake detection: only for natural listening (small forward step, not a
   // seek), crossing a partner who hasn't finished the book.
   const partner = db.users.find(u => u.id !== req.user.id);
   const partnerProg = partner && db.getProgress(partner.id, book.id);
-  const step = pos - prevPos;
-  if (partner && step > 0 && step < 60) {
+  if (partner && natural > 0) {
     updateListeningNotification(req.user, partner, book, pos);
     if (partnerProg && !partnerProg.finished && prevPos <= partnerProg.position && pos > partnerProg.position) {
       notifyOvertake(req.user, partner, book, pos, partnerProg.position);
@@ -475,10 +514,12 @@ app.post('/api/upload', requireAuth, (req, res) => {
   const book = safeEntryName(req.query.book);
   const filename = safeEntryName(req.query.filename);
   if (!book || !filename) return res.status(400).json({ error: 'bad_name' });
+  const folder = req.query.folder ? safeEntryName(req.query.folder) : null;
+  if (req.query.folder && !folder) return res.status(400).json({ error: 'bad_name' });
   const ext = path.extname(filename).toLowerCase();
   if (!AUDIO_EXT.has(ext) && !IMAGE_EXT.has(ext) && ext !== '.cue') return res.status(400).json({ error: 'unsupported_type' });
 
-  const dir = path.join(BOOKS_DIR, book);
+  const dir = folder ? path.join(BOOKS_DIR, folder, book) : path.join(BOOKS_DIR, book);
   fs.mkdirSync(dir, { recursive: true });
   const finalPath = path.join(dir, filename);
   const tmpPath = finalPath + '.uploading';

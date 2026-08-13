@@ -103,22 +103,40 @@ export async function scanLibrary(booksDirs, cacheFile) {
   const newCache = {};
   const books = [];
 
+  // Two levels: a top-level folder with audio files is a book; one without
+  // audio is a collection whose subfolders are books (shown as sections).
+  const listDirs = (p) => {
+    try {
+      return fs.readdirSync(p, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort(naturalCompare);
+    } catch { return []; }
+  };
+  const hasAudioFiles = (p) => {
+    try { return fs.readdirSync(p).some(f => AUDIO_EXT.has(path.extname(f).toLowerCase())); } catch { return false; }
+  };
+
   const dirEntries = [];
   const seenNames = new Set();
   for (const root of roots) {
-    let names = [];
-    try {
-      names = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
-    } catch { continue; }
-    for (const name of names.sort(naturalCompare)) {
-      if (seenNames.has(name)) continue;
-      seenNames.add(name);
-      dirEntries.push({ root, dirName: name });
+    for (const name of listDirs(root)) {
+      const dirPath = path.join(root, name);
+      if (hasAudioFiles(dirPath)) {
+        if (!seenNames.has(name)) {
+          seenNames.add(name);
+          dirEntries.push({ parent: root, dirName: name, folder: null });
+        }
+      } else {
+        for (const sub of listDirs(dirPath)) {
+          if (!seenNames.has(sub) && hasAudioFiles(path.join(dirPath, sub))) {
+            seenNames.add(sub);
+            dirEntries.push({ parent: dirPath, dirName: sub, folder: name });
+          }
+        }
+      }
     }
   }
 
-  for (const { root, dirName } of dirEntries) {
-    const dirPath = path.join(root, dirName);
+  for (const { parent, dirName, folder } of dirEntries) {
+    const dirPath = path.join(parent, dirName);
     const entries = fs.readdirSync(dirPath).sort(naturalCompare);
     const audioFiles = entries.filter(f => AUDIO_EXT.has(path.extname(f).toLowerCase()));
     if (audioFiles.length === 0) continue;
@@ -202,6 +220,7 @@ export async function scanLibrary(booksDirs, cacheFile) {
     books.push({
       id: slug(dirName),
       dirName,
+      folder,
       title,
       author,
       coverPath: coverName ? path.join(dirPath, coverName) : null,

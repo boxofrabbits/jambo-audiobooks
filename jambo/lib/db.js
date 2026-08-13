@@ -88,12 +88,38 @@ export class Db {
   getProgress(userId, bookId) {
     return this.data.progress[`${userId}:${bookId}`] || null;
   }
-  setProgress(userId, bookId, pos, finished) {
+  // naturalStep = seconds of real listening since the previous save (0 for
+  // seeks); accumulated into a "session" so the UI can say "listened 1h 20m".
+  // A gap of 10+ minutes starts a new session.
+  setProgress(userId, bookId, pos, finished, naturalStep = 0) {
+    const prev = this.data.progress[`${userId}:${bookId}`];
+    const now = Date.now();
+    let session = prev?.session || null;
+    if (naturalStep > 0) {
+      if (session && now - (prev?.updatedAt || 0) < 10 * 60e3) {
+        session = { seconds: session.seconds + naturalStep, endedAt: now };
+      } else {
+        session = { seconds: naturalStep, endedAt: now };
+      }
+    } else if (session) {
+      session = { ...session };
+    }
     this.data.progress[`${userId}:${bookId}`] = {
       position: pos,
       finished: !!finished,
-      updatedAt: Date.now(),
+      updatedAt: now,
+      session,
     };
     this.save();
+  }
+
+  // --- on-deck row hiding (per viewer) ---
+  hideFromDeck(userId, bookId) {
+    if (!this.data.deckHidden) this.data.deckHidden = {};
+    this.data.deckHidden[`${userId}:${bookId}`] = Date.now();
+    this.save();
+  }
+  deckHiddenAt(userId, bookId) {
+    return this.data.deckHidden?.[`${userId}:${bookId}`] || 0;
   }
 }
