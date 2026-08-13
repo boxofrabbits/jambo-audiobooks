@@ -1104,12 +1104,13 @@ async function renderPlayer(bookId) {
     ? el('div', { class: 'delta-card' }, deltaNum, partnerStatus)
     : null;
 
-  // --- chapters ---
-  const chapterRows = book.tracks.map(t =>
-    el('button', { class: 'chapter-row', onclick: () => player.seek(t.start + 0.01, true) },
-      el('span', {}, t.title),
-      el('span', { class: 'dur' }, fmtClock(t.duration))));
-  const chapters = el('div', { class: 'chapters', style: { display: book.tracks.length > 1 ? '' : 'none' } }, chapterRows);
+  // --- chapters (from a cue sheet when present, otherwise one per file) ---
+  const chapterList = book.chapters?.length ? book.chapters : book.tracks;
+  const chapterRows = chapterList.map(c =>
+    el('button', { class: 'chapter-row', onclick: () => player.seek(c.start + 0.01, true) },
+      el('span', {}, c.title),
+      el('span', { class: 'dur' }, fmtClock(c.duration))));
+  const chapters = el('div', { class: 'chapters', style: { display: chapterList.length > 1 ? '' : 'none' } }, chapterRows);
 
   $app.replaceChildren(el('div', { class: 'screen player fade-in' },
     el('div', { class: 'player-top' },
@@ -1184,9 +1185,12 @@ function updatePlayerUI() {
     ui.notesChip.textContent = { partner: '💬 Partner', all: '💬 All', off: '💬 Off' }[notePlayer.mode];
     ui.notesChip.classList.toggle('active', notePlayer.mode !== 'off');
 
-    if (book.tracks.length > 1) {
-      ui.trackLabel.textContent = `Part ${player.trackIdx + 1} of ${book.tracks.length}`;
-      ui.chapterRows.forEach((row, i) => row.classList.toggle('current', i === player.trackIdx));
+    const chapterList = book.chapters?.length ? book.chapters : book.tracks;
+    if (chapterList.length > 1) {
+      let ci = 0;
+      for (let i = 0; i < chapterList.length; i++) if (pos >= chapterList[i].start - 0.5) ci = i;
+      ui.trackLabel.textContent = `Chapter ${ci + 1} of ${chapterList.length}`;
+      ui.chapterRows.forEach((row, i) => row.classList.toggle('current', i === ci));
     }
 
     // partner marker + ahead/behind indicator

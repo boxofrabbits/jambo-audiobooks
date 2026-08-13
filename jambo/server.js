@@ -11,15 +11,20 @@ import { scanLibrary, AUDIO_EXT, IMAGE_EXT } from './lib/scan.js';
 import { syncSampleBook } from './lib/sample.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-let BOOKS_DIR = process.env.BOOKS_DIR || path.join(__dirname, 'books');
 
-// Running as a Home Assistant add-on: options from the add-on's Configuration
-// tab land in /data/options.json and override the env default.
+// Home Assistant add-on detection uses the FIXED path the supervisor always
+// provides — never env vars, which have proven unreliable. Getting this wrong
+// means writing data into the ephemeral container filesystem.
+const ADDON_OPTIONS_FILE = '/data/options.json';
+const IS_ADDON = fs.existsSync(ADDON_OPTIONS_FILE);
+
+const DATA_DIR = process.env.DATA_DIR || (IS_ADDON ? '/data' : path.join(__dirname, 'data'));
+let BOOKS_DIR = process.env.BOOKS_DIR || (IS_ADDON ? '/share/jambo/books' : path.join(__dirname, 'books'));
+
 let NOTIFY_SERVICES = new Map(); // lowercased profile name -> notify service
 let LISTENING_NOTIFICATIONS = true;
 try {
-  const opts = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'options.json'), 'utf8'));
+  const opts = JSON.parse(fs.readFileSync(IS_ADDON ? ADDON_OPTIONS_FILE : path.join(DATA_DIR, 'options.json'), 'utf8'));
   if (opts.books_dir) BOOKS_DIR = opts.books_dir;
   if (opts.listening_notifications === false) LISTENING_NOTIFICATIONS = false;
   for (const entry of opts.overtake_notifications || []) {
@@ -41,8 +46,8 @@ const secret = loadSecret(DATA_DIR);
 
 // Books can never silently vanish because books_dir changed: the add-on's
 // default share folder is ALWAYS scanned alongside the configured folder.
-const IS_ADDON = fs.existsSync(path.join(DATA_DIR, 'options.json'));
 const BOOKS_ROOTS = [...new Set([BOOKS_DIR, ...(IS_ADDON ? ['/share/jambo/books'] : [])])];
+console.log(`[storage] addon=${IS_ADDON} data=${DATA_DIR} books=${BOOKS_ROOTS.join(', ')}`);
 
 // If the configured folder didn't exist at startup (e.g. an unmounted USB
 // drive), creating it and carrying on would strand uploads in a folder that
@@ -254,6 +259,7 @@ app.get('/api/books/:id', requireAuth, (req, res) => {
   res.json({
     ...bookSummary(book, req.user.id),
     tracks: book.tracks.map(t => ({ idx: t.idx, title: t.title, duration: t.duration, start: t.start })),
+    chapters: (book.chapters || []).map(c => ({ title: c.title, start: c.start, duration: c.duration })),
     notes: notesForClient(book.id),
   });
 });

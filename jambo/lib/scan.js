@@ -63,6 +63,38 @@ async function ffprobeDuration(filePath) {
   }
 }
 
+// Cue sheets give named chapter points inside big single-file rips.
+// Timestamps are mm:ss:ff (75 frames per second); mm may exceed 99.
+function parseCueChapters(cuePath, tracks) {
+  let text = fs.readFileSync(cuePath, 'utf8');
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const chapters = [];
+  let currentTrack = tracks.length === 1 ? tracks[0] : null;
+  let pendingTitle = '';
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    let m;
+    if ((m = line.match(/^FILE\s+"(.+?)"/i)) || (m = line.match(/^FILE\s+(\S+)/i))) {
+      const base = (f) => path.basename(f, path.extname(f)).toLowerCase();
+      currentTrack = tracks.find(t => t.filename.toLowerCase() === m[1].toLowerCase())
+        || tracks.find(t => base(t.filename) === base(m[1]))
+        || (tracks.length === 1 ? tracks[0] : null);
+    } else if (/^TRACK\s+\d+/i.test(line)) {
+      pendingTitle = '';
+    } else if ((m = line.match(/^TITLE\s+"(.*)"/i))) {
+      pendingTitle = m[1];
+    } else if ((m = line.match(/^INDEX\s+01\s+(\d+):(\d\d):(\d\d)/i))) {
+      if (currentTrack) {
+        chapters.push({
+          title: pendingTitle || `Chapter ${chapters.length + 1}`,
+          start: currentTrack.start + Number(m[1]) * 60 + Number(m[2]) + Number(m[3]) / 75,
+        });
+      }
+    }
+  }
+  return chapters;
+}
+
 // Scans one or more roots; the first root to claim a folder name wins.
 export async function scanLibrary(booksDirs, cacheFile) {
   const roots = Array.isArray(booksDirs) ? booksDirs : [booksDirs];
@@ -151,6 +183,22 @@ export async function scanLibrary(booksDirs, cacheFile) {
     if (!author) author = metas.map(m => m.artist).find(Boolean) || '';
     if (title === dirName) title = metas.map(m => m.album).find(Boolean) || dirName;
 
+    // Chapters: cue sheets win (named points inside big files); otherwise one
+    // chapter per audio file.
+    let chapters = [];
+    for (const cueFile of entries.filter(f => f.toLowerCase().endsWith('.cue'))) {
+      try {
+        chapters.push(...parseCueChapters(path.join(dirPath, cueFile), tracks));
+      } catch (err) {
+        console.warn(`[scan] bad cue sheet ${cueFile}: ${err.message}`);
+      }
+    }
+    chapters = chapters.filter(c => c.start < offset + 1).sort((a, b) => a.start - b.start);
+    if (chapters.length === 0) chapters = tracks.map(t => ({ title: t.title, start: t.start }));
+    chapters.forEach((c, i) => {
+      c.duration = (i + 1 < chapters.length ? chapters[i + 1].start : offset) - c.start;
+    });
+
     books.push({
       id: slug(dirName),
       dirName,
@@ -159,6 +207,7 @@ export async function scanLibrary(booksDirs, cacheFile) {
       coverPath: coverName ? path.join(dirPath, coverName) : null,
       duration: offset,
       tracks,
+      chapters,
     });
   }
 
