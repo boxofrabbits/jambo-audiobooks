@@ -651,7 +651,13 @@ window.addEventListener('hashchange', () => {
 
 async function boot() {
   try {
-    const s = await api('/api/state');
+    let s = await api('/api/state');
+    // Under ingress the HA identity should always sign us in — a missing user
+    // is a transient proxy glitch, so retry before ever showing a PIN screen.
+    for (let i = 0; IS_INGRESS && !s.me && !s.setupNeeded && i < 3; i++) {
+      await new Promise(r => setTimeout(r, 1500));
+      s = await api('/api/state').catch(() => s);
+    }
     Object.assign(state, s);
   } catch {
     $app.replaceChildren(el('div', { class: 'screen auth' },
@@ -741,6 +747,20 @@ function renderSetup() {
 // ---------- login screens ----------
 
 function renderLogin() {
+  // If the login screen appears under ingress it's a connection hiccup —
+  // keep checking and sign in automatically the moment identity returns.
+  if (IS_INGRESS) {
+    libraryPollTimer = setInterval(async () => {
+      try {
+        const s = await api('/api/state');
+        if (s.me) {
+          Object.assign(state, s);
+          clearInterval(libraryPollTimer);
+          navigate('');
+        }
+      } catch { /* still offline */ }
+    }, 5000);
+  }
   $app.replaceChildren(el('div', { class: 'screen auth fade-in' },
     el('div', { class: 'logo' }, 'Jambo', el('span', { class: 'dot' }, '.')),
     el('p', { class: 'tagline' }, "Who's listening?"),

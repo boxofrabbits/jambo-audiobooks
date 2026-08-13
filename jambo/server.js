@@ -37,6 +37,10 @@ try {
 } catch { /* not an add-on */ }
 
 const SUPERVISOR_URL = process.env.SUPERVISOR_URL || 'http://supervisor';
+
+console.log(NOTIFY_SERVICES.size
+  ? `[notify] services configured: ${[...NOTIFY_SERVICES.entries()].map(([p, s]) => `${p} → ${s}`).join(', ')}`
+  : '[notify] NO services configured — overtake and listening notifications are OFF. Add overtake_notifications entries in the add-on Configuration tab to enable them.');
 const PORT = Number(process.env.PORT || 3000);
 
 // Home Assistant ingress proxies from a fixed IP and adds X-Remote-User-* headers.
