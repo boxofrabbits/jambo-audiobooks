@@ -156,6 +156,7 @@ const player = {
     this.book = book;
     this.notes = book.notes || [];
     this._prevTick = null;
+    this._played = false;
     this.position = clamp(startPos || 0, 0, Math.max(0, book.duration - 1));
     this.trackIdx = this.trackForPos(this.position);
     this.setTrack(this.trackIdx, this.position - book.tracks[this.trackIdx].start, false);
@@ -312,6 +313,8 @@ const player = {
 
   saveProgress(force = false, finished = false) {
     if (!this.book || !state.me) return;
+    // Merely opening a book isn't progress — don't save until play is pressed.
+    if (!this._played && this.position <= 0.5) return;
     if (!force && this.lastSavedPos === this.position) return;
     this.lastSavedPos = this.position;
     api('/api/progress', {
@@ -322,6 +325,7 @@ const player = {
 
   beaconSave() {
     if (!this.book || !state.me) return;
+    if (!this._played && this.position <= 0.5) return;
     const payload = JSON.stringify({ bookId: this.book.id, position: this.position });
     navigator.sendBeacon(rel('api/progress'), new Blob([payload], { type: 'application/json' }));
   },
@@ -388,7 +392,7 @@ audio.addEventListener('error', () => {
   const codes = { 1: 'aborted', 2: 'network error', 3: 'decode error', 4: 'source not supported' };
   player.onMediaError(codes[audio.error?.code] || 'media error');
 });
-audio.addEventListener('play', () => { setMediaPlaybackState('playing'); updatePlayerUI(); });
+audio.addEventListener('play', () => { player._played = true; setMediaPlaybackState('playing'); updatePlayerUI(); });
 audio.addEventListener('pause', () => { setMediaPlaybackState('paused'); player.saveProgress(true); updatePlayerUI(); });
 
 window.addEventListener('pagehide', () => player.beaconSave());

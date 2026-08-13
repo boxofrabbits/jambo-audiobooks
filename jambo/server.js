@@ -277,6 +277,10 @@ app.post('/api/logout', (req, res) => {
 // Most recent listening activity by either person, newest first, minus
 // entries the viewer has dismissed (a dismissal is undone by new listening).
 function onDeckFor(viewerId) {
+  // Ranked by when real listening last happened (session end), not by when a
+  // record was written — opening a book at 0:00 writes a record but isn't
+  // listening and must not hijack the deck from the partner's progress.
+  const activityAt = (p) => p.session?.endedAt || p.updatedAt;
   const latest = new Map(); // bookId -> {user, progress}
   for (const [key, prog] of Object.entries(db.data.progress)) {
     const sep = key.indexOf(':');
@@ -284,21 +288,22 @@ function onDeckFor(viewerId) {
     const bookId = key.slice(sep + 1);
     if (!bookById.has(bookId)) continue;
     if (!(prog.updatedAt > 0)) continue;
+    if (!(prog.position > 0.5) && !prog.session && !prog.finished) continue;
     const cur = latest.get(bookId);
-    if (!cur || prog.updatedAt > cur.progress.updatedAt) {
+    if (!cur || activityAt(prog) > activityAt(cur.progress)) {
       latest.set(bookId, { user: db.getUser(userId), progress: prog });
     }
   }
   return [...latest.entries()]
-    .filter(([bookId, e]) => e.user && e.progress.updatedAt > db.deckHiddenAt(viewerId, bookId))
-    .sort((a, b) => b[1].progress.updatedAt - a[1].progress.updatedAt)
+    .filter(([bookId, e]) => e.user && activityAt(e.progress) > db.deckHiddenAt(viewerId, bookId))
+    .sort((a, b) => activityAt(b[1].progress) - activityAt(a[1].progress))
     .slice(0, 12)
     .map(([bookId, e]) => ({
       bookId,
       user: publicUser(e.user),
       position: e.progress.position,
       finished: e.progress.finished,
-      updatedAt: e.progress.updatedAt,
+      updatedAt: activityAt(e.progress),
       session: e.progress.session || null,
     }));
 }
