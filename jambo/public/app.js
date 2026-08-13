@@ -138,6 +138,8 @@ const player = {
   blobTriedFor: null,
   notes: [],           // voice notes for the loaded book
   _prevTick: null,
+  _preloaded: null,    // URL of the next track being warmed in the cache
+  intendedPlaying: false, // true between user-play and user-pause (OS pauses don't clear it)
 
   get playing() { return this.book && !audio.paused && !audio.ended; },
 
@@ -170,12 +172,21 @@ const player = {
     setPlayerMessage('');
     audio.src = rel(`media/${this.book.id}/${idx}`);
     audio.playbackRate = this.speed;
-    const onMeta = () => {
-      audio.currentTime = clamp(offset, 0, track.duration || offset);
+    if (offset > 1) {
+      const onMeta = () => {
+        audio.currentTime = clamp(offset, 0, track.duration || offset);
+        if (thenPlay) audio.play().catch(() => {});
+      };
+      audio.addEventListener('loadedmetadata', onMeta, { once: true });
+      audio.load();
+    } else {
+      // Track starts from the top (file-to-file transition): play in the
+      // SAME event stack as the caller. Waiting for metadata first means an
+      // async play() that Android blocks when the screen is off — the cause
+      // of "audio stops between chapters with the phone locked".
+      audio.load();
       if (thenPlay) audio.play().catch(() => {});
-    };
-    audio.addEventListener('loadedmetadata', onMeta, { once: true });
-    audio.load();
+    }
   },
 
   // Some webviews (notably the HA companion apps) fetch <audio> media without
@@ -220,6 +231,7 @@ const player = {
     const idx = this.trackForPos(globalSec);
     const offset = globalSec - this.book.tracks[idx].start;
     this.position = globalSec;
+    if (thenPlay) this.intendedPlaying = true;
     if (idx === this.trackIdx && audio.readyState >= 1) {
       audio.currentTime = offset;
       if (thenPlay) audio.play().catch(() => {});
@@ -232,8 +244,13 @@ const player = {
 
   toggle() {
     if (!this.book) return;
-    if (this.playing) audio.pause();
-    else audio.play().catch(err => console.warn('play failed', err));
+    if (this.playing) {
+      this.intendedPlaying = false;
+      audio.pause();
+    } else {
+      this.intendedPlaying = true;
+      audio.play().catch(err => console.warn('play failed', err));
+    }
   },
 
   skip(delta) { this.seek(this.position + delta, this.playing); },
@@ -259,6 +276,8 @@ const player = {
     this.book = null;
     this.notes = [];
     this._prevTick = null;
+    this._preloaded = null;
+    this.intendedPlaying = false;
     this.sleepDeadline = null;
     this.sleepChoice = 0;
     notePlayer.stopAll();
@@ -284,10 +303,23 @@ const player = {
     }
     this._prevTick = this.position;
     if (this.sleepDeadline && Date.now() >= this.sleepDeadline) {
+      this.intendedPlaying = false;
       audio.pause();
       this.sleepDeadline = null;
       this.sleepChoice = 0;
       updatePlayerUI();
+    }
+    // Warm the browser cache with the next file near the end of this one, so
+    // the chapter transition needs no fresh network while the screen is off.
+    const nextTrack = this.book.tracks[this.trackIdx + 1];
+    if (nextTrack && this.playing) {
+      const remaining = track.start + track.duration - this.position;
+      const nextUrl = rel(`media/${this.book.id}/${nextTrack.idx}`);
+      if (remaining > 0 && remaining < 90 && this._preloaded !== nextUrl) {
+        this._preloaded = nextUrl;
+        preloadAudio.src = nextUrl;
+        preloadAudio.load();
+      }
     }
     this.throttledSave();
     this.updatePositionState();
@@ -300,6 +332,7 @@ const player = {
       updatePlayerUI();
     } else {
       this.position = this.book.duration;
+      this.intendedPlaying = false;
       this.saveProgress(true, true);
       updatePlayerUI();
     }
@@ -395,9 +428,20 @@ audio.addEventListener('error', () => {
 audio.addEventListener('play', () => { player._played = true; setMediaPlaybackState('playing'); updatePlayerUI(); });
 audio.addEventListener('pause', () => { setMediaPlaybackState('paused'); player.saveProgress(true); updatePlayerUI(); });
 
+// Warms the HTTP cache for upcoming chapter files; never actually played.
+const preloadAudio = new Audio();
+preloadAudio.preload = 'auto';
+preloadAudio.muted = true;
+
 window.addEventListener('pagehide', () => player.beaconSave());
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') player.beaconSave();
+  if (document.visibilityState === 'hidden') {
+    player.beaconSave();
+  } else if (player.book && player.intendedPlaying && audio.paused && !notePlayer.playing) {
+    // The OS paused us while the screen was off (the user never pressed
+    // pause) — pick the book back up the moment the screen returns.
+    audio.play().catch(() => {});
+  }
 });
 
 // ---------- voice notes ----------
