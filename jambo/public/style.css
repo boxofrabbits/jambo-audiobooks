@@ -174,7 +174,10 @@ input:focus { border-color: var(--accent); }
   cursor: pointer;
   display: flex; flex-direction: column; gap: 5px;
 }
-.deck-card .book-title { font-size: 13px; }
+/* Reserve two title lines so every deck card is the same height with the
+   info lines aligned, matching the library grid treatment. */
+.deck-card .book-title { font-size: 13px; min-height: calc(2 * 1.3em); }
+.deck-line, .deck-ago { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .deck-line { font-size: 11.5px; }
 .deck-ago { font-size: 11px; color: var(--text-faint); }
 .deck-x {

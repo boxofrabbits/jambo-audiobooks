@@ -887,15 +887,40 @@ async function renderHome() {
   const deckCard = (entry) => {
     const book = byId.get(entry.bookId);
     if (!book) return null;
-    const who = entry.user.id === state.me?.id ? 'You' : entry.user.name;
-    const line = entry.finished ? `${who} finished it`
-      : entry.session?.seconds >= 30 ? `${who} listened ${fmtLong(entry.session.seconds)}`
-      : `${who} at ${fmtLong(entry.position)}`;
+    // Headline = the gap between you two on this book, viewer's perspective —
+    // same semantics and colours as the player's gap card.
+    const me = book.me;
+    const partner = book.partner;
+    const pName = partner?.user?.name || 'them';
+    let line = '';
+    let color = 'var(--text-dim)';
+    if (!partner) {
+      const who = entry.user.id === state.me?.id ? 'You' : entry.user.name;
+      line = entry.finished ? `${who} finished it` : `${who} at ${fmtLong(entry.position)}`;
+    } else if (me?.finished && partner.progress?.finished) {
+      line = 'You both finished ✓'; color = 'var(--accent)';
+    } else if (partner.progress?.finished) {
+      line = `${pName} finished it`; color = partner.user.color;
+    } else if (me?.finished) {
+      line = 'You finished it'; color = state.me.color;
+    } else if (me && partner.progress) {
+      const diff = me.position - partner.progress.position;
+      if (Math.abs(diff) <= 60) { line = 'Together'; color = 'var(--accent)'; }
+      else if (diff > 0) { line = `${fmtLong(diff)} ahead`; color = state.me.color; }
+      else { line = `${fmtLong(-diff)} behind`; color = partner.user.color; }
+    } else if (partner.progress) {
+      line = `${pName} is ${fmtLong(partner.progress.position)} in`; color = partner.user.color;
+    } else if (me) {
+      line = `${pName} hasn't started`;
+    }
+    const live = partner && isLive(partner.progress);
     const card = el('div', { class: 'deck-card' },
       coverEl(book, 'cover'),
       el('div', { class: 'book-title' }, book.title),
-      el('div', { class: 'deck-line', style: { color: entry.user.color } }, line),
-      el('div', { class: 'deck-ago' }, fmtAgo(entry.updatedAt)));
+      el('div', { class: 'deck-line', style: { color } }, line),
+      el('div', { class: 'deck-ago' }, live
+        ? [el('span', { class: 'live-pulse', style: { display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: partner.user.color, marginRight: '5px' } }), `${pName} listening now`]
+        : fmtAgo(entry.updatedAt)));
     card.addEventListener('click', () => navigate(`#/book/${encodeURIComponent(book.id)}`));
     card.append(el('button', { class: 'deck-x', title: 'Remove from On Deck', onclick: async (e) => {
       e.stopPropagation();
