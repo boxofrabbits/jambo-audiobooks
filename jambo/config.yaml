@@ -1,5 +1,5 @@
 name: Jambo Audiobooks
-version: "1.8.10"
+version: "1.9.0"
 slug: jambo
 description: Shared audiobook player for two — see each other's progress on the timeline
 arch:
