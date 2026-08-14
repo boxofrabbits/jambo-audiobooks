@@ -40,6 +40,7 @@ export class Db {
     if (!this.data.users) this.data.users = [];
     if (!this.data.progress) this.data.progress = {};
     if (!this.data.notes) this.data.notes = [];
+    if (!this.data.requests) this.data.requests = [];
 
     // Roll a backup of the last known-good state at every startup — but only
     // from the main file, so a corrupt main never clobbers a good backup.
@@ -111,6 +112,14 @@ export class Db {
       session,
     };
     this.save();
+  }
+
+  // --- book requests (wishlist) ---
+  get requests() { return this.data.requests; }
+  addRequest(r) { this.data.requests.push(r); this.save(); }
+  deleteRequest(id) {
+    const i = this.data.requests.findIndex(r => r.id === id);
+    if (i >= 0) { this.data.requests.splice(i, 1); this.save(); }
   }
 
   // --- cached book metadata (synopsis, genres) ---

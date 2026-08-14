@@ -1130,9 +1130,10 @@ async function renderSettings() {
   );
   $app.replaceChildren(screen);
 
-  let status, libData;
+  let status, libData, reqData;
   try {
-    [status, libData] = await Promise.all([api('/api/notify-status'), api('/api/books')]);
+    [status, libData, reqData] = await Promise.all([
+      api('/api/notify-status'), api('/api/books'), api('/api/requests')]);
   } catch { return; }
 
   const partner = state.users?.find(u => u.id !== state.me?.id);
@@ -1162,7 +1163,8 @@ async function renderSettings() {
       s.service || 'not configured'));
 
   screen.querySelector('.spinner').replaceWith(el('div', {},
-    el('div', { class: 'setup-card' },
+    requestCard(reqData.requests),
+    el('div', { class: 'setup-card', style: { marginTop: '16px' } },
       el('h3', {}, 'Notifications'),
       el('div', { class: 'field' },
         el('label', {}, 'Configured phones (add-on Configuration tab → overtake_notifications)'),
@@ -1176,6 +1178,60 @@ async function renderSettings() {
       resultLine),
     manageCard(libData.books),
   ));
+}
+
+// Wishlist: search the book database and pin requests for the next upload.
+function requestCard(requests) {
+  const search = el('input', { placeholder: 'e.g. project hail mary' });
+  const results = el('div', { class: 'lookup-results' });
+  const msg = el('p', { class: 'error-msg' });
+  let timer = null;
+
+  search.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = search.value.trim();
+    if (q.length < 3) { results.replaceChildren(); return; }
+    timer = setTimeout(async () => {
+      results.replaceChildren(el('div', { class: 'lookup-hint' }, 'Searching…'));
+      try {
+        const { results: found } = await api(`/api/booksearch?q=${encodeURIComponent(q)}`);
+        if (search.value.trim() !== q) return;
+        results.replaceChildren(...(found.length ? found.map(r =>
+          el('button', { class: 'lookup-row', onclick: async () => {
+            msg.textContent = '';
+            try {
+              const added = await api('/api/requests', { method: 'POST', body: { title: r.title, author: r.author } });
+              if (added.duplicate) { msg.textContent = 'Already on the list.'; return; }
+              renderSettings();
+            } catch (e) { msg.textContent = `Could not add: ${e.message}`; }
+          } },
+            el('span', {}, r.title),
+            el('span', { class: 'dur' }, [r.author, r.year].filter(Boolean).join(' · '))))
+          : [el('div', { class: 'lookup-hint' }, 'Nothing found.')]));
+      } catch {
+        results.replaceChildren(el('div', { class: 'lookup-hint' }, 'Search unavailable right now.'));
+      }
+    }, 500);
+  });
+
+  const reqRow = (r) => el('div', { class: 'upload-file' },
+    el('span', { class: 'upload-file-name' }, `${r.title}${r.author ? ` — ${r.author}` : ''}`),
+    el('span', { class: 'dur' }, r.user?.name || ''),
+    el('button', { class: 'upload-remove', title: 'Remove request', onclick: async () => {
+      await api(`/api/requests/${r.id}`, { method: 'DELETE' }).catch(() => {});
+      renderSettings();
+    } }, '✕'));
+
+  return el('div', { class: 'setup-card' },
+    el('h3', {}, 'Request a book'),
+    el('div', { class: 'field' },
+      el('label', {}, 'Search the book database — tap a match to add it to the wishlist'),
+      search, results),
+    requests.length
+      ? el('div', { class: 'upload-list' }, requests.map(reqRow))
+      : el('p', { class: 'tagline', style: { fontSize: '12.5px', margin: '0' } },
+          'Nothing requested yet. Requests show up as a dropdown on the upload screen.'),
+    msg);
 }
 
 // Per-book folder moves and deletion, used by the settings screen.
@@ -1251,6 +1307,28 @@ function renderUpload() {
 
   const author = el('input', { placeholder: 'e.g. Ursula K. Le Guin (optional)' });
   const title = el('input', { placeholder: 'e.g. A Wizard of Earthsea' });
+
+  // Requested books: selecting one autofills the fields; a successful upload
+  // then takes it off the wishlist.
+  let selectedRequestId = null;
+  let requestList = [];
+  const reqSelect = el('select', { class: 'lib-sort', style: { width: '100%', padding: '10px' } },
+    el('option', { value: '' }, 'Choose a requested book…'));
+  const reqWrap = el('div', { class: 'field', style: { display: 'none' } },
+    el('label', {}, 'Requested books'), reqSelect);
+  api('/api/requests').then(d => {
+    requestList = d.requests || [];
+    if (!requestList.length) return;
+    for (const r of requestList) {
+      reqSelect.append(el('option', { value: r.id }, `${r.title}${r.author ? ` — ${r.author}` : ''}`));
+    }
+    reqWrap.style.display = '';
+  }).catch(() => {});
+  reqSelect.addEventListener('change', () => {
+    const r = requestList.find(x => x.id === reqSelect.value);
+    selectedRequestId = r?.id || null;
+    if (r) { title.value = r.title; author.value = r.author || ''; }
+  });
 
   // Look up the book online and autofill author/title.
   const lookupInput = el('input', { placeholder: 'e.g. wizard of earthsea' });
@@ -1391,6 +1469,9 @@ function renderUpload() {
       progressText.textContent = '100% — done';
       submitBtn.textContent = 'Scanning…';
       await api('/api/rescan', { method: 'POST' });
+      if (selectedRequestId) {
+        await api(`/api/requests/${selectedRequestId}`, { method: 'DELETE' }).catch(() => {});
+      }
       navigate('#/library', true);
     } catch (e) {
       status.textContent = `Upload failed: ${e.message}`;
@@ -1406,6 +1487,7 @@ function renderUpload() {
       state.me ? avatarEl(state.me, true) : null),
     el('div', { class: 'setup-card', style: { marginTop: '8px' } },
       el('h3', {}, 'Add a book'),
+      reqWrap,
       el('div', { class: 'field' },
         el('label', {}, 'Look up the book — tap a match to autofill'),
         lookupInput, lookupResults),

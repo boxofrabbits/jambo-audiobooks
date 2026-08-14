@@ -432,6 +432,35 @@ app.post('/api/notify-test', requireAuth, async (req, res) => {
   res.json({ ...result, service });
 });
 
+// ---------- book requests (wishlist) ----------
+
+app.get('/api/requests', requireAuth, (req, res) => {
+  res.json({
+    requests: db.requests
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(r => ({ ...r, user: publicUser(db.getUser(r.requestedBy)) })),
+  });
+});
+
+app.post('/api/requests', requireAuth, (req, res) => {
+  const title = String(req.body?.title || '').trim().slice(0, 150);
+  const author = String(req.body?.author || '').trim().slice(0, 100);
+  if (!title) return res.status(400).json({ error: 'title_required' });
+  const dupe = db.requests.find(r =>
+    r.title.toLowerCase() === title.toLowerCase() && r.author.toLowerCase() === author.toLowerCase());
+  if (dupe) return res.json({ ok: true, request: dupe, duplicate: true });
+  const request = { id: crypto.randomUUID(), title, author, requestedBy: req.user.id, createdAt: Date.now() };
+  db.addRequest(request);
+  console.log(`[requests] ${req.user.name} requested "${title}"${author ? ` by ${author}` : ''}`);
+  res.json({ ok: true, request });
+});
+
+app.delete('/api/requests/:id', requireAuth, (req, res) => {
+  db.deleteRequest(req.params.id);
+  res.json({ ok: true });
+});
+
 // Book lookup for the upload screen's autofill.
 app.get('/api/booksearch', requireAuth, async (req, res) => {
   const q = String(req.query.q || '').trim();
