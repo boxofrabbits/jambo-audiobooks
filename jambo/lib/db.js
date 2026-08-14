@@ -121,6 +121,22 @@ export class Db {
     this.save();
   }
 
+  // Removes every stored trace of a book (progress, deck state, metadata,
+  // note records); returns the ids of removed notes so files can be cleaned.
+  deleteBookData(bookId) {
+    for (const k of Object.keys(this.data.progress)) {
+      if (k.endsWith(`:${bookId}`)) delete this.data.progress[k];
+    }
+    for (const k of Object.keys(this.data.deckHidden || {})) {
+      if (k.endsWith(`:${bookId}`)) delete this.data.deckHidden[k];
+    }
+    if (this.data.bookMeta) delete this.data.bookMeta[bookId];
+    const removed = this.data.notes.filter(n => n.bookId === bookId).map(n => n.id);
+    this.data.notes = this.data.notes.filter(n => n.bookId !== bookId);
+    this.save();
+    return removed;
+  }
+
   // --- on-deck row hiding (per viewer) ---
   hideFromDeck(userId, bookId) {
     if (!this.data.deckHidden) this.data.deckHidden = {};

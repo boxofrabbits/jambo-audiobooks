@@ -350,6 +350,88 @@ app.get('/api/books/:id', requireAuth, (req, res) => {
   });
 });
 
+// ---------- library management (settings screen) ----------
+
+const bookDir = (book) => path.dirname(book.tracks[0].path);
+
+app.delete('/api/books/:id', requireAuth, async (req, res) => {
+  const book = bookById.get(req.params.id);
+  if (!book) return res.status(404).json({ error: 'not_found' });
+  try {
+    fs.rmSync(bookDir(book), { recursive: true, force: true });
+    const noteIds = db.deleteBookData(book.id);
+    for (const id of noteIds) fs.rm(path.join(NOTES_DIR, `${id}.wav`), { force: true }, () => {});
+    console.log(`[manage] ${req.user.name} deleted "${book.title}"`);
+    await rescan();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[manage] delete failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/books/:id/move', requireAuth, async (req, res) => {
+  const book = bookById.get(req.params.id);
+  if (!book) return res.status(404).json({ error: 'not_found' });
+  const folder = req.body?.folder ? safeEntryName(req.body.folder) : null;
+  if (req.body?.folder && !folder) return res.status(400).json({ error: 'bad_name' });
+  const src = bookDir(book);
+  const destParent = folder ? path.join(BOOKS_DIR, folder) : BOOKS_DIR;
+  const dest = path.join(destParent, path.basename(src));
+  if (dest === src) return res.json({ ok: true });
+  try {
+    if (fs.existsSync(dest)) return res.status(409).json({ error: 'destination_exists' });
+    fs.mkdirSync(destParent, { recursive: true });
+    try {
+      fs.renameSync(src, dest);
+    } catch (err) {
+      if (err.code !== 'EXDEV') throw err;
+      // Different filesystem (e.g. /share -> /media): copy then remove.
+      fs.cpSync(src, dest, { recursive: true });
+      fs.rmSync(src, { recursive: true, force: true });
+    }
+    console.log(`[manage] ${req.user.name} moved "${book.title}" to ${folder || 'the library root'}`);
+    await rescan();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[manage] move failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- notification diagnostics (settings screen) ----------
+
+app.get('/api/notify-status', requireAuth, (req, res) => {
+  res.json({
+    isAddon: IS_ADDON,
+    hasToken: !!process.env.SUPERVISOR_TOKEN,
+    listeningNotifications: LISTENING_NOTIFICATIONS,
+    services: db.users.map(u => ({
+      profile: u.name,
+      service: NOTIFY_SERVICES.get(u.name.toLowerCase()) || null,
+    })),
+  });
+});
+
+app.post('/api/notify-test', requireAuth, async (req, res) => {
+  const target = req.body?.target === 'partner'
+    ? db.users.find(u => u.id !== req.user.id)
+    : req.user;
+  if (!target) return res.json({ ok: false, error: 'No partner profile exists yet.' });
+  const service = NOTIFY_SERVICES.get(target.name.toLowerCase());
+  if (!service) {
+    return res.json({ ok: false, error: `No notify service is configured for "${target.name}" — add an overtake_notifications entry in the add-on Configuration tab.` });
+  }
+  if (!process.env.SUPERVISOR_TOKEN) {
+    return res.json({ ok: false, error: 'No supervisor token available — is Jambo running as a Home Assistant add-on?' });
+  }
+  const result = await haNotify(service, {
+    title: 'Jambo 📖',
+    message: `Test notification for ${target.name} — if you can read this, notifications are working!`,
+  }, `test notification sent to ${target.name} (${service})`);
+  res.json({ ...result, service });
+});
+
 // Book lookup for the upload screen's autofill.
 app.get('/api/booksearch', requireAuth, async (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -454,10 +536,15 @@ async function haNotify(service, payload, label) {
       },
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const body = (await res.text().catch(() => '')).slice(0, 200);
+      throw new Error(`HTTP ${res.status}${body ? ` — ${body}` : ''}`);
+    }
     if (label) console.log(`[notify] ${label}`);
+    return { ok: true };
   } catch (err) {
     console.warn(`[notify] failed (${label || 'notification'}): ${err.message}`);
+    return { ok: false, error: err.message };
   }
 }
 

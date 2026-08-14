@@ -33,6 +33,7 @@ const ICONS = {
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-1.5 6.5"/><path d="M20 5v6h-6" stroke-linejoin="round"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>',
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
 // ---------- utils ----------
@@ -697,6 +698,7 @@ function render() {
   if (m) return renderPlayer(decodeURIComponent(m[1]));
   if (location.hash === '#/upload') return renderUpload();
   if (location.hash === '#/library') return renderLibrary();
+  if (location.hash === '#/settings') return renderSettings();
   renderHome();
 }
 
@@ -847,6 +849,8 @@ function libHeader(onRefresh, backTo) {
       ? el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigateUp(backTo) })
       : el('div', { class: 'logo' }, 'Jambo', el('span', { class: 'dot' }, '.')),
     el('div', { class: 'header-actions' },
+      el('button', { class: 'icon-btn', title: 'Settings', html: ICONS.gear,
+        onclick: () => navigate('#/settings') }),
       el('button', { class: 'icon-btn', title: 'Add a book', html: ICONS.upload,
         onclick: () => navigate('#/upload') }),
       el('button', { class: 'icon-btn', title: 'Rescan library', html: ICONS.refresh,
@@ -1113,6 +1117,130 @@ function miniPlayerEl() {
   };
   bar.update();
   return bar;
+}
+
+// ---------- settings screen ----------
+
+async function renderSettings() {
+  const screen = el('div', { class: 'screen fade-in' },
+    el('div', { class: 'player-top' },
+      el('button', { class: 'icon-btn', html: ICONS.backArrow, onclick: () => navigateUp('') }),
+      state.me ? avatarEl(state.me, true) : null),
+    el('div', { class: 'spinner' }),
+  );
+  $app.replaceChildren(screen);
+
+  let status, libData;
+  try {
+    [status, libData] = await Promise.all([api('/api/notify-status'), api('/api/books')]);
+  } catch { return; }
+
+  const partner = state.users?.find(u => u.id !== state.me?.id);
+  const resultLine = el('p', { class: 'error-msg', style: { minHeight: '40px' } });
+
+  const testBtn = (label, target) => el('button', { class: 'btn-primary', style: { marginTop: '10px' },
+    onclick: async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      resultLine.textContent = 'Sending…';
+      try {
+        const r = await api('/api/notify-test', { method: 'POST', body: { target } });
+        resultLine.style.color = r.ok ? '#9fd0a5' : '';
+        resultLine.textContent = r.ok
+          ? `Sent via ${r.service} ✓ — check that phone now.`
+          : r.error;
+      } catch (err) {
+        resultLine.style.color = '';
+        resultLine.textContent = `Request failed: ${err.message}`;
+      }
+      btn.disabled = false;
+    } }, label);
+
+  const serviceRow = (s) => el('div', { class: 'upload-file' },
+    el('span', { class: 'upload-file-name' }, s.profile),
+    el('span', { class: 'dur', style: s.service ? {} : { color: '#ff8f7d' } },
+      s.service || 'not configured'));
+
+  screen.querySelector('.spinner').replaceWith(el('div', {},
+    el('div', { class: 'setup-card' },
+      el('h3', {}, 'Notifications'),
+      el('div', { class: 'field' },
+        el('label', {}, 'Configured phones (add-on Configuration tab → overtake_notifications)'),
+        el('div', { class: 'upload-list' }, status.services.map(serviceRow))),
+      !status.hasToken ? el('p', { class: 'error-msg' },
+        'No Home Assistant connection — tests only work when running as the add-on.') : null,
+      el('p', { class: 'tagline', style: { fontSize: '12.5px', margin: '4px 0 0' } },
+        `Listening notifications are ${status.listeningNotifications ? 'on' : 'off'}. A test sends a real push through Home Assistant to the chosen phone.`),
+      testBtn('Send test to my phone', 'me'),
+      partner ? testBtn(`Send test to ${partner.name}'s phone`, 'partner') : null,
+      resultLine),
+    manageCard(libData.books),
+  ));
+}
+
+// Per-book folder moves and deletion, used by the settings screen.
+function manageCard(books) {
+  const folders = [...new Set(books.map(b => b.folder).filter(Boolean))].sort();
+  const manageMsg = el('p', { class: 'error-msg' });
+
+  const row = (book) => {
+    const sel = el('select', { class: 'lib-sort', style: { flex: '1', padding: '8px 10px' } },
+      el('option', { value: '' }, '(no folder)'),
+      folders.map(f => el('option', { value: f }, f)),
+      el('option', { value: '__new__' }, 'New folder…'));
+    sel.value = book.folder || '';
+    const newFolder = el('input', { placeholder: 'New folder name', style: { display: 'none', marginTop: '6px' } });
+    sel.addEventListener('change', () => {
+      newFolder.style.display = sel.value === '__new__' ? '' : 'none';
+    });
+
+    const moveBtn = el('button', { class: 'chip-btn', onclick: async (e) => {
+      const folder = sel.value === '__new__' ? newFolder.value.trim().replace(/[/\\<>:"|?*.]/g, '') : sel.value;
+      if (sel.value === '__new__' && !folder) { manageMsg.textContent = 'Give the new folder a name first.'; return; }
+      if ((folder || null) === (book.folder || null)) { manageMsg.textContent = 'Already there.'; return; }
+      e.currentTarget.textContent = 'Moving…';
+      try {
+        await api(`/api/books/${encodeURIComponent(book.id)}/move`, { method: 'POST', body: { folder: folder || null } });
+        renderSettings();
+      } catch (err) {
+        manageMsg.textContent = `Move failed: ${err.message}`;
+        e.currentTarget.textContent = 'Move';
+      }
+    } }, 'Move');
+
+    // Deleting needs two taps: the first arms the button.
+    const delBtn = el('button', { class: 'chip-btn', style: { color: '#ff8f7d' }, onclick: async (e) => {
+      const btn = e.currentTarget;
+      if (btn.dataset.armed !== '1') {
+        btn.dataset.armed = '1';
+        btn.textContent = 'Really delete?';
+        setTimeout(() => { btn.dataset.armed = ''; btn.textContent = '🗑'; }, 4000);
+        return;
+      }
+      btn.textContent = 'Deleting…';
+      try {
+        await api(`/api/books/${encodeURIComponent(book.id)}`, { method: 'DELETE' });
+        renderSettings();
+      } catch (err) {
+        manageMsg.textContent = `Delete failed: ${err.message}`;
+        btn.dataset.armed = '';
+        btn.textContent = '🗑';
+      }
+    } }, '🗑');
+
+    return el('div', { class: 'manage-row' },
+      el('div', { class: 'upload-file-name', style: { fontSize: '14px' } },
+        book.title, book.folder ? el('span', { class: 'dur' }, `  📁 ${book.folder}`) : null),
+      el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, sel, moveBtn, delBtn),
+      newFolder);
+  };
+
+  return el('div', { class: 'setup-card', style: { marginTop: '16px' } },
+    el('h3', {}, 'Manage library'),
+    el('p', { class: 'tagline', style: { fontSize: '12.5px', margin: '0' } },
+      'Deleting removes the audio files and both of your progress on that book. Moving between folders keeps everything.'),
+    ...books.map(row),
+    manageMsg);
 }
 
 // ---------- upload screen ----------

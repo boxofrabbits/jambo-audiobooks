@@ -472,6 +472,12 @@ input:focus { border-color: var(--accent); }
 .lookup-row:active { background: var(--bg); }
 .lookup-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lookup-hint { color: var(--text-faint); font-size: 12.5px; padding: 4px 2px; }
+.manage-row {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-raise-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
 
 /* chapters */
 .chapters { margin-top: 10px; border-top: 1px solid var(--line); }
