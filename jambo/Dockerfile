@@ -14,4 +14,7 @@ COPY public ./public
 ENV DATA_DIR=/data \
     BOOKS_DIR=/share/jambo/books
 
-CMD ["node", "server.js"]
+COPY run.sh /run.sh
+RUN chmod a+x /run.sh
+
+CMD ["/run.sh"]
