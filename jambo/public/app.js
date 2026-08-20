@@ -78,6 +78,8 @@ const rel = (path) => BASE + String(path).replace(/^\/+/, '');
 // Behind HA ingress, sessions expire (~15 min) when the phone screen is off
 // and background pings get throttled — mid-file range requests then fail.
 const IS_INGRESS = location.pathname.includes('/api/hassio_ingress/');
+// The companion apps put "Home Assistant" in the webview's user agent.
+const isCompanionApp = () => /Home Assistant/i.test(navigator.userAgent);
 
 async function api(path, opts = {}) {
   const res = await fetch(rel(path), {
@@ -1764,6 +1766,15 @@ async function renderPlayer(bookId) {
       el('button', { class: 'chip-btn', onclick: () => chapterSkip(1) }, 'Chapter ⏭')) : null,
     el('div', { class: 'sub-controls' }, speedChip, sleepChip, micChip, notesChip),
     messageLine,
+    isCompanionApp() && !localStorage.getItem('jambo_chrome_hint') ? (() => {
+      const hint = el('div', { class: 'warn-banner', style: { marginTop: '12px' } },
+        '📱 Planning to listen with the screen off? The Home Assistant app stops audio a few minutes after the phone locks — for long sessions, open this same address in Chrome or Safari instead. ',
+        el('button', { class: 'undo-btn', onclick: () => {
+          localStorage.setItem('jambo_chrome_hint', '1');
+          hint.remove();
+        } }, 'Got it'));
+      return hint;
+    })() : null,
     aboutSection(book),
     chapters,
   ));
