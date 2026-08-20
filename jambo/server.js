@@ -407,11 +407,20 @@ app.get('/api/notify-status', requireAuth, (req, res) => {
     isAddon: IS_ADDON,
     hasToken: !!process.env.SUPERVISOR_TOKEN,
     listeningNotifications: LISTENING_NOTIFICATIONS,
+    myListeningAlerts: req.user.notifyListening !== false,
     services: db.users.map(u => ({
       profile: u.name,
       service: NOTIFY_SERVICES.get(u.name.toLowerCase()) || null,
     })),
   });
+});
+
+// Personal preference: receive (or not) the ambient "«partner» is listening"
+// notifications. Overtake alerts are unaffected.
+app.post('/api/notify-prefs', requireAuth, (req, res) => {
+  req.user.notifyListening = req.body?.listening !== false;
+  db.save();
+  res.json({ ok: true, listening: req.user.notifyListening });
 });
 
 app.post('/api/notify-test', requireAuth, async (req, res) => {
@@ -599,6 +608,7 @@ const listenSessions = new Map(); // listenerId -> {bookId, lastAt, lastPushAt, 
 
 function updateListeningNotification(listener, partner, book, pos) {
   if (!LISTENING_NOTIFICATIONS || !process.env.SUPERVISOR_TOKEN) return;
+  if (partner.notifyListening === false) return; // recipient opted out in-app
   const service = NOTIFY_SERVICES.get(partner.name.toLowerCase());
   if (!service) return;
   let s = listenSessions.get(listener.id);

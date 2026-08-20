@@ -475,6 +475,15 @@ audio.addEventListener('play', () => {
 setInterval(() => {
   if (IS_INGRESS && player.playing) fetch(rel('api/state')).catch(() => {});
 }, 4 * 60e3);
+
+// Playback watchdog: if the OS paused us (never the user — intent is cleared
+// on every deliberate pause), keep trying to pick the book back up. Runs at
+// most once a minute when backgrounded due to timer throttling.
+setInterval(() => {
+  if (player.book && player.intendedPlaying && audio.paused && !notePlayer.playing && !recorder.active) {
+    audio.play().catch(() => {});
+  }
+}, 20e3);
 audio.addEventListener('pause', () => { setMediaPlaybackState('paused'); player.saveProgress(true); updatePlayerUI(); });
 
 // Warms the HTTP cache for upcoming chapter files; never actually played.
@@ -1171,8 +1180,20 @@ async function renderSettings() {
         el('div', { class: 'upload-list' }, status.services.map(serviceRow))),
       !status.hasToken ? el('p', { class: 'error-msg' },
         'No Home Assistant connection — tests only work when running as the add-on.') : null,
+      partner ? el('button', { class: 'chip-btn', style: { marginTop: '8px', alignSelf: 'flex-start' },
+        onclick: async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          try {
+            const r = await api('/api/notify-prefs', { method: 'POST', body: { listening: !status.myListeningAlerts } });
+            status.myListeningAlerts = r.listening;
+            btn.textContent = `🎧 “${partner.name} is listening” alerts: ${r.listening ? 'On' : 'Off'}`;
+          } catch { /* leave as-is */ }
+          btn.disabled = false;
+        } },
+        `🎧 “${partner.name} is listening” alerts: ${status.myListeningAlerts ? 'On' : 'Off'}`) : null,
       el('p', { class: 'tagline', style: { fontSize: '12.5px', margin: '4px 0 0' } },
-        `Listening notifications are ${status.listeningNotifications ? 'on' : 'off'}. A test sends a real push through Home Assistant to the chosen phone.`),
+        `That toggle is just for your phone — overtake alerts (“you got passed!”) stay on for both of you. A test sends a real push through Home Assistant to the chosen phone.${status.listeningNotifications ? '' : ' Note: listening alerts are currently disabled globally in the add-on configuration.'}`),
       testBtn('Send test to my phone', 'me'),
       partner ? testBtn(`Send test to ${partner.name}'s phone`, 'partner') : null,
       resultLine),
